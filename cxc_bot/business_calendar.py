@@ -3,6 +3,11 @@ y el calculo de "N dias habiles antes de una fecha".
 
 Se separa de la logica de programacion para que agregar feriados en el
 futuro sea solo editar config/scheduling.json, sin tocar el runner.
+
+Regla de negocio vigente (Cosprobell): la semana laboral es lunes a SABADO;
+solo el domingo no es habil. No se usa una libreria/logica estandar de
+"dias habiles" porque esas casi siempre asumen sabado no habil -- aqui el
+default es explicito y viene de configuracion, no de una convencion externa.
 """
 
 from __future__ import annotations
@@ -12,14 +17,29 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List, Set
+from zoneinfo import ZoneInfo
 
 DEFAULT_SCHEDULING_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "scheduling.json"
+DEFAULT_TIMEZONE = "America/Tegucigalpa"
+
+# 0=lunes ... 6=domingo. Solo domingo (6) es no-habil por defecto: sabado SI
+# se trabaja en Cosprobell.
+DEFAULT_NON_BUSINESS_WEEKDAYS = {6}
+
+
+def today_in_timezone(tz_name: str = DEFAULT_TIMEZONE) -> date:
+    """'Hoy' segun la zona horaria del negocio, no la del servidor/maquina
+    donde corra el runner o n8n. Evita que una corrida cerca de medianoche
+    calcule mal que dia es "hoy" si la maquina esta en otro huso horario."""
+
+    return datetime.now(ZoneInfo(tz_name)).date()
 
 
 @dataclass(frozen=True)
 class BusinessCalendar:
-    non_business_weekdays: Set[int] = field(default_factory=lambda: {5, 6})  # 0=lunes ... 6=domingo
+    non_business_weekdays: Set[int] = field(default_factory=lambda: set(DEFAULT_NON_BUSINESS_WEEKDAYS))
     holidays: Set[date] = field(default_factory=set)
+    timezone: str = DEFAULT_TIMEZONE
 
     def is_business_day(self, d: date) -> bool:
         return d.weekday() not in self.non_business_weekdays and d not in self.holidays
@@ -52,9 +72,10 @@ def _parse_date(value: str) -> date:
 
 def load_business_calendar(path: Path = DEFAULT_SCHEDULING_CONFIG_PATH) -> BusinessCalendar:
     raw = _load_scheduling_config(path)
-    non_business = set(raw.get("dias_no_habiles_semana", [5, 6]))
+    non_business = set(raw.get("dias_no_habiles_semana", list(DEFAULT_NON_BUSINESS_WEEKDAYS)))
     holidays = {_parse_date(h) for h in raw.get("feriados", [])}
-    return BusinessCalendar(non_business_weekdays=non_business, holidays=holidays)
+    timezone = raw.get("timezone", DEFAULT_TIMEZONE)
+    return BusinessCalendar(non_business_weekdays=non_business, holidays=holidays, timezone=timezone)
 
 
 def load_preparation_lead_days(path: Path = DEFAULT_SCHEDULING_CONFIG_PATH) -> int:

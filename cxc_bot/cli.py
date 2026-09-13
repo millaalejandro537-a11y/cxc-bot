@@ -21,6 +21,7 @@ from .business_calendar import (
     load_business_calendar,
     load_preparation_lead_days,
     load_scheduling_settings,
+    today_in_timezone,
 )
 from .catalog import CatalogError, VendorCatalog
 from .config import RouteNotFoundError, load_route_config
@@ -222,12 +223,16 @@ def cmd_process_due_routes(args) -> int:
     lead_days = args.lead_days if args.lead_days is not None else load_preparation_lead_days(
         Path(args.scheduling_config)
     )
-    today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else date.today()
 
     schedule_source = LocalScheduleSource(Path(args.schedule))
     catalog = VendorCatalog.load()
     calendar = load_business_calendar(Path(args.scheduling_config))
     history = HistoryStore(Path(args.history_db))
+
+    # "Hoy" en la zona horaria del negocio (America/Tegucigalpa por defecto),
+    # no la de la maquina/servidor donde corra esto -- salvo que se pase
+    # --today explicitamente (pruebas, catch-up manual de un dia especifico).
+    today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else today_in_timezone(calendar.timezone)
     sap_data_source = LocalMockDataSource(sap_data_path)
 
     result = process_due_routes(
