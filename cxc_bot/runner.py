@@ -219,10 +219,13 @@ def process_one_entry(
     # ruta, porque SAP entrega el catalogo completo de clientes).
 
     # 5-6. Generar + validar con el motor existente (sin modificarlo).
-    # Formato preferido para archivos nuevos: "[RUTA] [mes] [año].xlsx"
-    # (file_resolver.py sigue reconociendo el formato historico sin año).
+    # Formato preferido para archivos nuevos: "[RUTA] [DD] [mes] [año].xlsx"
+    # (incluye el dia porque una misma ruta puede salir mas de una vez en el
+    # mismo mes; file_resolver.py sigue reconociendo los formatos historicos
+    # sin dia y/o sin año).
     output_filename = (
-        f"{route_config.filename_prefix} {spanish_month_name(entry.fecha_salida)} {entry.fecha_salida.year}.xlsx"
+        f"{route_config.filename_prefix} {entry.fecha_salida.day:02d} "
+        f"{spanish_month_name(entry.fecha_salida)} {entry.fecha_salida.year}.xlsx"
     )
     output_path = base_path.parent / output_filename
     try:

@@ -1,33 +1,42 @@
 """Localiza automaticamente la carpeta y el archivo base de una ruta bajo:
 
-    <routes_root>/<Vendedor>/<Ruta>/[RUTA] [mes].xlsx
-    <routes_root>/<Vendedor>/<Ruta>/[RUTA] [mes] [año].xlsx   (formato preferido para archivos nuevos)
+    <routes_root>/<Vendedor>/<Ruta>/[RUTA] [mes].xlsx                  (historico)
+    <routes_root>/<Vendedor>/<Ruta>/[RUTA] [mes] [año].xlsx            (historico con año)
+    <routes_root>/<Vendedor>/<Ruta>/[RUTA] [DD] [mes] [año].xlsx       (formato preferido, nuevo)
+
+El formato con dia es el preferido para archivos nuevos porque una misma
+ruta puede salir mas de una vez en el mismo mes (p.ej. "CORTES 08 octubre
+2026.xlsx" y "CORTES 22 octubre 2026.xlsx"): sin el dia, dos salidas del
+mismo mes colisionarian en un solo nombre de archivo.
 
 Regla de oro: si hay cualquier ambiguedad, NO ADIVINAR. Se aborta con un
 error especifico y una lista clara de candidatos para que una persona
 decida. Nunca se elige "el primero" ni se ordena alfabeticamente (agosto
 quedaria antes que enero, que es incorrecto cronologicamente).
 
-Estrategia: la senal PRINCIPAL es el mes (y, si esta explicito en el
-nombre, el año) interpretado desde el nombre del archivo -- nunca la fecha
-de modificacion, porque abrir o volver a guardar un Excel viejo le cambia
-el mtime sin que eso signifique que ahora es el mas reciente.
+Estrategia: la senal PRINCIPAL es la fecha (dia/mes/año, hasta donde el
+nombre la traiga explicita) interpretada desde el NOMBRE del archivo --
+nunca la fecha de modificacion, porque abrir o volver a guardar un Excel
+viejo le cambia el mtime sin que eso signifique que ahora es el mas
+reciente.
 
-- Si el nombre trae año explicito ("... septiembre 2026.xlsx"), ESE año
-  manda, sin excepcion: no se infiere y no lo desplaza ningun mtime.
-- Si el nombre NO trae año (formato historico, "... septiembre.xlsx"), el
-  año se infiere contra una fecha de referencia (la fecha de salida de la
-  ruta que se esta preparando): la ocurrencia mas reciente de ese mes que
-  no sea posterior a esa fecha. Asi, "diciembre" visto en octubre de 2026
-  se entiende como diciembre de 2025 (el unico diciembre que ya paso).
+- Si el nombre trae año explicito, ESE año manda (no se infiere). Si ademas
+  trae dia explicito, ESE dia manda tambien: la fecha explicita completa
+  nunca es desplazada por mtime ni por una fecha menos especifica.
+- Si el nombre NO trae año (formato historico, solo mes), el año se infiere
+  contra una fecha de referencia (la fecha de salida de la ruta que se esta
+  preparando): la ocurrencia mas reciente de ese mes que no sea posterior a
+  esa fecha. Un archivo sin dia explicito se ordena como si fuera el
+  primero de ese mes (dia 0), asi una salida con dia explicito del MISMO
+  mes siempre queda despues.
 
-Con (año, mes) como clave, dos candidatos con años/meses DISTINTOS siempre
-quedan ordenados sin ambiguedad. La fecha de modificacion (mtime) solo
-entra en juego como desempate dentro del mismo (año, mes) -- y aun ahi, un
-archivo con año EXPLICITO siempre le gana a uno con año inferido, sin
-importar mtime; el mtime solo decide entre dos candidatos del mismo "nivel"
-(ambos explicitos o ambos inferidos). Si ni así se puede desempatar con
-margen claro, se aborta como ambiguo.
+La clave de orden es (año, mes, dia-o-0): dos candidatos con cualquiera de
+estos tres valores distinto quedan ordenados sin ambiguedad, sin importar
+mtime. Solo cuando la fecha completa coincide EXACTAMENTE entre dos
+archivos entra en juego una jerarquia de "especificidad" (fecha con dia
+explicito > con año explicito sin dia > totalmente inferida) y, si aun asi
+empatan, el mtime como ultimo desempate -- y si ni eso alcanza, se aborta
+como ambiguo en vez de adivinar.
 """
 
 from __future__ import annotations
@@ -50,8 +59,9 @@ MESES_ES = [
 MIN_VALID_YEAR = 2000
 MAX_VALID_YEAR = 2100
 
-# Dos archivos del MISMO (año, mes) con mtimes mas cerca que esto se
-# consideran "empatados" y se abortan como ambiguos en vez de adivinar.
+# Dos archivos con la MISMA fecha completa (año, mes, dia) y el mismo nivel
+# de especificidad, con mtimes mas cerca que esto, se consideran "empatados"
+# y se abortan como ambiguos en vez de adivinar.
 _MTIME_TIE_THRESHOLD_SECONDS = 2.0
 
 
@@ -79,6 +89,7 @@ class _ParsedName(NamedTuple):
     month_name: str
     month_index: int  # 1=enero ... 12=diciembre
     explicit_year: Optional[int]
+    explicit_day: Optional[int]
 
 
 @dataclass
@@ -88,18 +99,37 @@ class BaseFileCandidate:
     month_index: int
     year: int  # explicito si estaba en el nombre; si no, inferido via reference_date
     explicit_year: Optional[int]  # None si el año se infirio (formato historico)
+    explicit_day: Optional[int]  # None si el nombre no trae dia (formato mensual)
     mtime: float
 
     @property
-    def sort_key(self) -> Tuple[int, int]:
-        return (self.year, self.month_index)
+    def sort_key(self) -> Tuple[int, int, int]:
+        return (self.year, self.month_index, self.explicit_day or 0)
 
     @property
     def has_explicit_year(self) -> bool:
         return self.explicit_year is not None
 
     @property
+    def has_explicit_day(self) -> bool:
+        return self.explicit_day is not None
+
+    @property
+    def specificity(self) -> int:
+        """0 = mes inferido, 1 = año explicito sin dia, 2 = fecha completa
+        (dia+mes+año explicitos). Una fecha mas especifica siempre le gana a
+        una menos especifica, nunca al reves, sin importar mtime."""
+
+        if self.has_explicit_day:
+            return 2
+        if self.has_explicit_year:
+            return 1
+        return 0
+
+    @property
     def display_label(self) -> str:
+        if self.has_explicit_day:
+            return f"{self.explicit_day:02d} {self.month_name} {self.year}"
         return f"{self.month_name} {self.year}" + ("" if self.has_explicit_year else " (inferido)")
 
 
@@ -119,9 +149,13 @@ def _find_child_dir(parent: Path, target_name: str) -> Optional[Path]:
 
 
 def _parse_name(filename: str, prefix: str) -> Optional[_ParsedName]:
-    """Interpreta '<prefijo> <mes>.xlsx' o '<prefijo> <mes> <año>.xlsx'.
-    Devuelve None si el nombre no aplica o el año explicito es invalido
-    (nunca se fuerza a encajar ni se adivina un año fuera de rango)."""
+    """Interpreta, en orden de preferencia creciente:
+        '<prefijo> <mes>.xlsx'
+        '<prefijo> <mes> <año>.xlsx'
+        '<prefijo> <DD> <mes> <año>.xlsx'   (formato preferido, nuevo)
+    Devuelve None si el nombre no aplica o alguna parte explicita (año, dia)
+    es invalida (nunca se fuerza a encajar ni se adivina un valor fuera de
+    rango o una fecha calendario imposible)."""
 
     stem = Path(filename).stem  # sin ".xlsx"
     prefix_key = normalize_key(prefix)
@@ -133,10 +167,13 @@ def _parse_name(filename: str, prefix: str) -> Optional[_ParsedName]:
         return None
 
     tokens = remainder.split(" ")
+    day_token = None
     if len(tokens) == 1:
         month_token, year_token = tokens[0], None
     elif len(tokens) == 2:
         month_token, year_token = tokens
+    elif len(tokens) == 3:
+        day_token, month_token, year_token = tokens
     else:
         return None
 
@@ -158,7 +195,20 @@ def _parse_name(filename: str, prefix: str) -> Optional[_ParsedName]:
             return None
         explicit_year = year_val
 
-    return _ParsedName(month_name=month_name, month_index=month_index, explicit_year=explicit_year)
+    explicit_day = None
+    if day_token is not None:
+        if not (day_token.isdigit() and 1 <= len(day_token) <= 2):
+            return None
+        day_val = int(day_token)
+        try:
+            date(explicit_year, month_index, day_val)  # valida que la fecha exista de verdad
+        except ValueError:
+            return None
+        explicit_day = day_val
+
+    return _ParsedName(
+        month_name=month_name, month_index=month_index, explicit_year=explicit_year, explicit_day=explicit_day
+    )
 
 
 def _infer_year_for_month(month_index: int, reference_date: date) -> int:
@@ -214,6 +264,7 @@ def list_base_file_candidates(
                 month_index=parsed.month_index,
                 year=year,
                 explicit_year=parsed.explicit_year,
+                explicit_day=parsed.explicit_day,
                 mtime=child.stat().st_mtime,
             )
         )
@@ -221,20 +272,20 @@ def list_base_file_candidates(
 
 
 def _resolve_group_winner(group: List[BaseFileCandidate], route_dir: Path) -> BaseFileCandidate:
-    """Dentro de un mismo (año, mes): el año EXPLICITO siempre le gana a uno
-    inferido, sin importar mtime. Solo se desempata por mtime entre
-    candidatos del mismo 'nivel' (ambos explicitos o ambos inferidos)."""
+    """Dentro de un mismo (año, mes, dia): una fecha mas ESPECIFICA siempre
+    le gana a una menos especifica, sin importar mtime. Solo se desempata
+    por mtime entre candidatos del mismo nivel de especificidad."""
 
-    ranked = sorted(group, key=lambda c: (c.has_explicit_year, c.mtime), reverse=True)
+    ranked = sorted(group, key=lambda c: (c.specificity, c.mtime), reverse=True)
     if len(ranked) == 1:
         return ranked[0]
 
     top, second = ranked[0], ranked[1]
-    if top.has_explicit_year and not second.has_explicit_year:
-        return top  # el año explicito manda, sin desempate por mtime
+    if top.specificity > second.specificity:
+        return top  # la fecha mas especifica manda, sin desempate por mtime
 
-    # Mismo nivel (ambos explicitos o ambos inferidos): ahi si desempata mtime.
-    same_level = [c for c in ranked if c.has_explicit_year == top.has_explicit_year]
+    # Mismo nivel de especificidad: ahi si desempata mtime.
+    same_level = [c for c in ranked if c.specificity == top.specificity]
     same_level.sort(key=lambda c: c.mtime, reverse=True)
     newest, next_best = same_level[0], same_level[1]
     if (newest.mtime - next_best.mtime) < _MTIME_TIE_THRESHOLD_SECONDS:

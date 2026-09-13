@@ -335,3 +335,85 @@ def test_two_explicit_years_same_month_ambiguous_mtime_aborts(tmp_path, config):
 
     with pytest.raises(AmbiguousBaseFileError):
         resolve(tmp_path, config)
+
+
+# ---------------------------------------------------------------------------
+# Formato preferido nuevo: "[RUTA] [DD] [mes] [año].xlsx"
+# ---------------------------------------------------------------------------
+def test_day_stamped_filename_is_recognized(tmp_path, config):
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES 08 octubre 2026.xlsx", mtime=1000)
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 10, 20))
+    assert result.name == "CORTES 08 octubre 2026.xlsx"
+
+
+def test_same_month_two_outputs_different_days_picks_the_later_day(tmp_path, config):
+    """Ejemplo explicito del encargo: la misma ruta sale dos veces en
+    octubre (dia 8 y dia 22). El dia mayor debe ganar, sin importar mtime."""
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES 22 octubre 2026.xlsx", mtime=1)  # mtime mas viejo...
+    _touch(route_dir / "CORTES 08 octubre 2026.xlsx", mtime=9_000_000_000)  # ...pero mtime mas nuevo
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 10, 25))
+    assert result.name == "CORTES 22 octubre 2026.xlsx"
+
+
+def test_december_to_january_rollover_with_day(tmp_path, config):
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES 28 diciembre 2026.xlsx", mtime=1000)
+    _touch(route_dir / "CORTES 05 enero 2027.xlsx", mtime=1000)
+
+    result = resolve(tmp_path, config, reference_date=date(2027, 1, 10))
+    assert result.name == "CORTES 05 enero 2027.xlsx"
+
+
+def test_day_stamped_file_beats_dayless_file_of_same_month_even_with_older_mtime(tmp_path, config):
+    """La fecha explicita completa (con dia) nunca es desplazada por una
+    menos especifica ni por mtime, ni siquiera si la menos especifica es
+    mucho mas reciente en disco."""
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES octubre 2026.xlsx", mtime=9_000_000_000)  # sin dia, mtime recentisimo
+    _touch(route_dir / "CORTES 08 octubre 2026.xlsx", mtime=1)  # con dia, mtime viejo
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 10, 20))
+    assert result.name == "CORTES 08 octubre 2026.xlsx"
+
+
+@pytest.mark.parametrize("bad_name", [
+    "CORTES 32 octubre 2026.xlsx",   # dia invalido (no existe el 32)
+    "CORTES 00 octubre 2026.xlsx",   # dia invalido (no existe el 0)
+    "CORTES 31 abril 2026.xlsx",     # fecha calendario imposible (abril tiene 30 dias)
+    "CORTES 29 febrero 2027.xlsx",   # 2027 no es bisiesto
+    "CORTES ocho octubre 2026.xlsx", # dia no numerico
+])
+def test_invalid_day_is_ignored_not_guessed(tmp_path, config, bad_name):
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / bad_name, mtime=1000)
+
+    with pytest.raises(NoBaseFileFoundError):
+        resolve(tmp_path, config, reference_date=date(2026, 10, 20))
+
+
+def test_february_29_on_a_leap_year_is_valid(tmp_path, config):
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES 29 febrero 2028.xlsx", mtime=1000)  # 2028 SI es bisiesto
+
+    result = resolve(tmp_path, config, reference_date=date(2028, 3, 1))
+    assert result.name == "CORTES 29 febrero 2028.xlsx"
+
+
+def test_two_day_stamped_outputs_same_day_ambiguous_mtime_aborts(tmp_path, config):
+    route_dir = tmp_path / "Erick Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES 08 octubre 2026.xlsx", mtime=1000.0)
+    _touch(route_dir / "CORTES  08 octubre 2026.xlsx", mtime=1000.5)  # doble espacio: otro archivo
+
+    with pytest.raises(AmbiguousBaseFileError):
+        resolve(tmp_path, config, reference_date=date(2026, 10, 20))

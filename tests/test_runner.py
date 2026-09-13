@@ -56,7 +56,7 @@ def make_entry(vendor="Erick Brizuela", route="Cortés", fecha_salida=date(2026,
 @pytest.fixture
 def routes_root(tmp_path, base_file):
     """<root>/Erick Brizuela/Cortes/CORTES septiembre.xlsx, listo para que el
-    runner genere CORTES octubre 2026.xlsx junto a el."""
+    runner genere CORTES 13 octubre 2026.xlsx junto a el."""
     root = tmp_path / "RUTA VENDEDORES"
     route_dir = root / "Erick Brizuela" / "Cortes"
     route_dir.mkdir(parents=True)
@@ -112,7 +112,7 @@ def test_one_due_route_succeeds(routes_root, sap_source, history, catalog, calen
     result = run(entries, routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 9))
     assert result.processed == 1
     assert result.succeeded == 1
-    assert result.routes[0].output_file.endswith("CORTES octubre 2026.xlsx")
+    assert result.routes[0].output_file.endswith("CORTES 13 octubre 2026.xlsx")
 
 
 # 3. varias rutas pendientes
@@ -174,8 +174,45 @@ def test_duplicate_run_is_idempotent_via_history(routes_root, sap_source, histor
     assert r2.skipped == 1
     assert r2.succeeded == 0
 
-    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
+    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES *octubre*.xlsx"))
     assert len(generated) == 1  # nunca se duplico el archivo
+
+
+def test_same_route_twice_in_the_same_month_produces_two_distinct_files(
+    routes_root, sap_source, history, catalog, calendar
+):
+    """La identidad de una ejecucion es vendedor+ruta+FECHA DE SALIDA, no
+    ruta+mes+año: la misma ruta puede salir dos veces en el mismo mes y debe
+    generar dos archivos distintos, cada uno con su propio historial, sin
+    que el segundo pise al primero."""
+
+    first_trip = make_entry(entry_id="viaje-1", fecha_salida=date(2026, 10, 8))
+    second_trip = make_entry(entry_id="viaje-2", fecha_salida=date(2026, 10, 22))
+
+    r1 = run([first_trip], routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 6))
+    assert r1.succeeded == 1
+    assert r1.routes[0].output_file.endswith("CORTES 08 octubre 2026.xlsx")
+
+    r2 = run([second_trip], routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 19))
+    assert r2.succeeded == 1
+    assert r2.routes[0].output_file.endswith("CORTES 22 octubre 2026.xlsx")
+
+    # Ambos archivos existen a la vez; ninguno piso al otro.
+    cortes_dir = routes_root / "Erick Brizuela" / "Cortes"
+    generated = sorted(p.name for p in cortes_dir.glob("CORTES *octubre*.xlsx"))
+    assert generated == ["CORTES 08 octubre 2026.xlsx", "CORTES 22 octubre 2026.xlsx"]
+
+    # Cada salida quedo registrada por separado en el historial, con su
+    # propia natural_key (misma ruta+vendedor, distinta fecha_salida).
+    rows = {r["natural_key"]: r for r in history.find_by_route("Cortés", vendor="Erick Brizuela")}
+    assert len(rows) == 2
+    assert first_trip.natural_key != second_trip.natural_key
+
+    # Repetir la primera salida sigue siendo idempotente (no afecta a la segunda).
+    r1_again = run([first_trip], routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 6))
+    assert r1_again.skipped == 1
+    generated_after = sorted(p.name for p in cortes_dir.glob("CORTES *octubre*.xlsx"))
+    assert generated_after == generated  # sigue habiendo exactamente 2 archivos
 
 
 # 6. archivo base faltante
@@ -230,7 +267,7 @@ def test_validation_failure_rolls_back_output_file(routes_root, history, catalog
     assert result.failed == 1
     assert result.routes[0].error_category == "cliente_inexistente"
 
-    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
+    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES *octubre*.xlsx"))
     assert generated == []  # no debe quedar un archivo invalido tirado
 
 
@@ -271,7 +308,7 @@ def test_history_is_recorded_correctly(routes_root, sap_source, history, catalog
     row = rows[0]
     assert row["estado"] == "exito"
     assert row["cantidad_clientes"] == 32
-    assert row["archivo_generado"].endswith("CORTES octubre 2026.xlsx")
+    assert row["archivo_generado"].endswith("CORTES 13 octubre 2026.xlsx")
     assert row["fuente_datos"] == "fake"
     assert row["duracion_ms"] is not None
 
