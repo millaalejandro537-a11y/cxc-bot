@@ -14,7 +14,7 @@ estado de una entrada.
 
 from __future__ import annotations
 
-import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +32,7 @@ from .history_store import ExecutionRecord, HistoryStore
 from .models import ScheduleEntry
 from .notifier import Notifier, default_notifier
 from .schedule_source import ScheduleSource
+from .storage import LocalRouteStorage, RouteStorage, StorageError
 
 MESES_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -145,6 +146,7 @@ def process_one_entry(
     history: HistoryStore,
     schedule_source: ScheduleSource,
     run_id: str,
+    storage: RouteStorage,
 ) -> RouteJobResult:
     natural_key = entry.natural_key
     started = time.monotonic()
@@ -218,7 +220,6 @@ def process_one_entry(
     # 4. Datos SAP: ya vienen resueltos (se piden UNA vez por corrida, no por
     # ruta, porque SAP entrega el catalogo completo de clientes).
 
-    # 5-6. Generar + validar con el motor existente (sin modificarlo).
     # Formato preferido para archivos nuevos: "[RUTA] [DD] [mes] [año].xlsx"
     # (incluye el dia porque una misma ruta puede salir mas de una vez en el
     # mismo mes; file_resolver.py sigue reconociendo los formatos historicos
@@ -227,48 +228,56 @@ def process_one_entry(
         f"{route_config.filename_prefix} {entry.fecha_salida.day:02d} "
         f"{spanish_month_name(entry.fecha_salida)} {entry.fecha_salida.year}.xlsx"
     )
-    output_path = base_path.parent / output_filename
-    try:
-        result = excel_service.generate_route(
-            route_config=route_config,
-            base_path=base_path,
-            output_path=output_path,
-            new_date=entry.fecha_salida,
-            sap_records=sap_records,
-            force=False,
-        )
-    except excel_service.OutputExistsError as e:
-        return _finish(
-            "error",
-            source_file=str(base_path),
-            error_category="archivo_destino_ya_existente",
-            error_message=str(e),
-        )
-    except (OSError, PermissionError) as e:
-        return _finish(
-            "error", source_file=str(base_path), error_category="error_escritura", error_message=str(e)
-        )
-    except excel_service.ExcelServiceError as e:
-        return _finish(
-            "error", source_file=str(base_path), error_category="error_inesperado", error_message=str(e)
-        )
+    destination_path = base_path.parent / output_filename
 
-    report = validators.validate_workbook(output_path, route_config, expected_date=entry.fecha_salida)
-    if not report.ok:
-        # No dejar un archivo invalido en la carpeta del vendedor.
+    # 5-7: copiar base a una carpeta de trabajo LOCAL, generar y validar ahi
+    # (nunca se procesa directamente sobre el storage), y solo si todo sale
+    # bien se PUBLICA de forma atomica y verificada. Si la publicacion falla
+    # o no se puede verificar, no se marca exito ni se deja nada a medias en
+    # el destino (seccion 22 del encargo).
+    with tempfile.TemporaryDirectory(prefix="cxc_bot_") as tmp_dir:
+        local_work_dir = Path(tmp_dir)
         try:
-            os.remove(output_path)
-        except OSError:
-            pass
-        return _finish(
-            "error",
-            source_file=str(base_path),
-            error_category=_classify_validation_errors(report.errors),
-            error_message="; ".join(report.errors),
-        )
+            staged_base = storage.stage_base_file(base_path, local_work_dir)
+        except StorageError as e:
+            return _finish("error", source_file=str(base_path), error_category=e.category, error_message=str(e))
 
-    # 7. El archivo ya quedo guardado en la carpeta correcta (junto al base).
-    # 8-9. Registrar y solo AHORA marcar como preparada.
+        local_output_path = local_work_dir / output_filename
+        try:
+            result = excel_service.generate_route(
+                route_config=route_config,
+                base_path=staged_base,
+                output_path=local_output_path,
+                new_date=entry.fecha_salida,
+                sap_records=sap_records,
+                force=False,
+            )
+        except (OSError, PermissionError) as e:
+            return _finish(
+                "error", source_file=str(base_path), error_category="error_escritura", error_message=str(e)
+            )
+        except excel_service.ExcelServiceError as e:
+            return _finish(
+                "error", source_file=str(base_path), error_category="error_inesperado", error_message=str(e)
+            )
+
+        report = validators.validate_workbook(local_output_path, route_config, expected_date=entry.fecha_salida)
+        if not report.ok:
+            # El archivo invalido vive solo en el temporal local, que se
+            # borra solo al salir del 'with': nunca llega a publicarse.
+            return _finish(
+                "error",
+                source_file=str(base_path),
+                error_category=_classify_validation_errors(report.errors),
+                error_message="; ".join(report.errors),
+            )
+
+        try:
+            published_path = storage.publish(local_output_path, destination_path, force=False)
+        except StorageError as e:
+            return _finish("error", source_file=str(base_path), error_category=e.category, error_message=str(e))
+
+    # 8-9. Registrar y solo AHORA (publicacion verificada) marcar como preparada.
     try:
         schedule_source.mark_prepared(entry.id)
     except Exception:
@@ -276,7 +285,7 @@ def process_one_entry(
 
     return _finish(
         "success",
-        output_file=str(output_path),
+        output_file=str(published_path),
         source_file=str(base_path),
         client_count=result.client_count,
     )
@@ -295,9 +304,11 @@ def process_due_routes(
     notifier: Optional[Notifier] = None,
     today: Optional[date] = None,
     run_id: Optional[str] = None,
+    storage: Optional[RouteStorage] = None,
 ) -> ProcessRunResult:
     history = history or HistoryStore()
     notifier = notifier or default_notifier()
+    storage = storage or LocalRouteStorage()
     today = today or date.today()
     run_id = run_id or f"{today.isoformat()}-{uuid.uuid4().hex[:8]}"
 
@@ -358,6 +369,7 @@ def process_due_routes(
                 history=history,
                 schedule_source=schedule_source,
                 run_id=run_id,
+                storage=storage,
             )
         except Exception as e:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del lote
             job_result = RouteJobResult(

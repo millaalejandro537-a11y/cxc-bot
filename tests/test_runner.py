@@ -13,6 +13,7 @@ from cxc_bot.history_store import HistoryStore
 from cxc_bot.models import SapClientRecord, ScheduleEntry
 from cxc_bot.runner import compute_due_entries, process_due_routes
 from cxc_bot.schedule_source import LocalScheduleSource, ScheduleSource
+from cxc_bot.storage import NetworkRouteStorage
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +85,7 @@ def sap_source(baseline_sap_records):
     return FakeDataSource(records=baseline_sap_records)
 
 
-def run(entries, routes_root, sap_source, history, catalog, calendar, today, lead_days=3):
+def run(entries, routes_root, sap_source, history, catalog, calendar, today, lead_days=3, storage=None):
     return process_due_routes(
         schedule_source=FakeScheduleSource(entries),
         catalog=catalog,
@@ -95,6 +96,7 @@ def run(entries, routes_root, sap_source, history, catalog, calendar, today, lea
         sap_source_label="fake",
         history=history,
         today=today,
+        storage=storage,
     )
 
 
@@ -213,6 +215,36 @@ def test_same_route_twice_in_the_same_month_produces_two_distinct_files(
     assert r1_again.skipped == 1
     generated_after = sorted(p.name for p in cortes_dir.glob("CORTES *octubre*.xlsx"))
     assert generated_after == generated  # sigue habiendo exactamente 2 archivos
+
+
+# Storage: PC empresarial no disponible -- no debe publicar, no debe marcar
+# exito, no debe tocar el archivo base ni dejar nada corrupto.
+def test_storage_unavailable_fails_cleanly_without_touching_the_base_file(
+    routes_root, sap_source, history, catalog, calendar
+):
+    import hashlib
+
+    base_path = routes_root / "Erick Brizuela" / "Cortes" / "CORTES septiembre.xlsx"
+    base_hash_before = hashlib.sha256(base_path.read_bytes()).hexdigest()
+
+    # El "share de red" nunca llego a montarse.
+    offline_storage = NetworkRouteStorage(routes_root.parent / "share_nunca_montado")
+
+    entries = [make_entry()]
+    result = run(entries, routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 9), storage=offline_storage)
+
+    assert result.failed == 1
+    assert result.routes[0].error_category == "storage_no_disponible"
+    assert result.routes[0].output_file is None
+
+    # nada se publico, y el archivo base ni se toco
+    assert list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES *octubre*.xlsx")) == []
+    assert hashlib.sha256(base_path.read_bytes()).hexdigest() == base_hash_before
+
+    # como nunca hubo exito, la entrada sigue disponible para reintentar
+    # (retry) en la proxima corrida -- no quedo marcada como preparada.
+    rows = history.find_by_route("Cortés", vendor="Erick Brizuela")
+    assert all(r["estado"] == "error" for r in rows)
 
 
 # 6. archivo base faltante
