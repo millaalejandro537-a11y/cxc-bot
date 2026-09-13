@@ -25,6 +25,12 @@ from typing import List, Optional
 from . import excel_service, validators
 from .business_calendar import BusinessCalendar
 from .catalog import CatalogError, VendorCatalog
+from .composite_config import load_composite_route
+from .composite_route_service import (
+    CompositeRouteError,
+    composite_output_folder_name,
+    generate_composite_route_local,
+)
 from .config import RouteNotFoundError, load_route_config
 from .data_source import SapDataSource
 from .file_resolver import FileResolutionError, resolve_base_file
@@ -203,22 +209,14 @@ def process_one_entry(
     except CatalogError as e:
         return _finish("error", error_category="programacion_invalida", error_message=str(e))
 
-    # 2. Config de ruta.
+    # 2. Config de ruta (simple o compuesta -- ver composite_config.py).
+    composite = load_composite_route(canonical_route)
     try:
-        route_config = load_route_config(canonical_route)
+        route_config = load_route_config(
+            composite.template_route_id if composite else canonical_route
+        )
     except RouteNotFoundError as e:
         return _finish("error", error_category="configuracion_ruta_faltante", error_message=str(e))
-
-    # 3. Archivo base mas reciente.
-    try:
-        base_path = resolve_base_file(
-            routes_root, canonical_vendor, canonical_route, route_config, reference_date=entry.fecha_salida
-        )
-    except FileResolutionError as e:
-        return _finish("error", error_category=e.category, error_message=str(e))
-
-    # 4. Datos SAP: ya vienen resueltos (se piden UNA vez por corrida, no por
-    # ruta, porque SAP entrega el catalogo completo de clientes).
 
     # Formato preferido para archivos nuevos: "[RUTA] [DD] [mes] [año].xlsx"
     # (incluye el dia porque una misma ruta puede salir mas de una vez en el
@@ -228,37 +226,62 @@ def process_one_entry(
         f"{route_config.filename_prefix} {entry.fecha_salida.day:02d} "
         f"{spanish_month_name(entry.fecha_salida)} {entry.fecha_salida.year}.xlsx"
     )
-    destination_path = base_path.parent / output_filename
 
-    # 5-7: copiar base a una carpeta de trabajo LOCAL, generar y validar ahi
-    # (nunca se procesa directamente sobre el storage), y solo si todo sale
-    # bien se PUBLICA de forma atomica y verificada. Si la publicacion falla
-    # o no se puede verificar, no se marca exito ni se deja nada a medias en
-    # el destino (seccion 22 del encargo).
+    # 5-7: copiar base(s) a una carpeta de trabajo LOCAL, generar y validar
+    # ahi (nunca se procesa directamente sobre el storage), y solo si todo
+    # sale bien se PUBLICA de forma atomica y verificada. Si la publicacion
+    # falla o no se puede verificar, no se marca exito ni se deja nada a
+    # medias en el destino (seccion 22 del encargo).
     with tempfile.TemporaryDirectory(prefix="cxc_bot_") as tmp_dir:
         local_work_dir = Path(tmp_dir)
+        source_file_label = None
         try:
-            staged_base = storage.stage_base_file(base_path, local_work_dir)
-        except StorageError as e:
-            return _finish("error", source_file=str(base_path), error_category=e.category, error_message=str(e))
-
-        local_output_path = local_work_dir / output_filename
-        try:
-            result = excel_service.generate_route(
-                route_config=route_config,
-                base_path=staged_base,
-                output_path=local_output_path,
-                new_date=entry.fecha_salida,
-                sap_records=sap_records,
-                force=False,
+            if composite:
+                # 3-4 (compuesta): cada componente resuelve y copia su propio
+                # archivo base; el roster combinado se arma aqui, no en el motor.
+                output_folder = composite_output_folder_name(composite)
+                destination_path = (
+                    Path(routes_root) / composite.vendor / output_folder / output_filename
+                )
+                local_output_path = local_work_dir / f"__salida__{output_filename}"
+                comp_result = generate_composite_route_local(
+                    composite, routes_root, local_work_dir, local_output_path,
+                    entry.fecha_salida, sap_records, storage=storage,
+                )
+                source_file_label = "; ".join(f"{k}: {v}" for k, v in comp_result.component_base_files.items())
+                result = comp_result.generation
+            else:
+                # 3 (simple): un solo archivo base.
+                base_path = resolve_base_file(
+                    routes_root, canonical_vendor, canonical_route, route_config, reference_date=entry.fecha_salida
+                )
+                source_file_label = str(base_path)
+                destination_path = base_path.parent / output_filename
+                staged_base = storage.stage_base_file(base_path, local_work_dir)
+                local_output_path = local_work_dir / output_filename
+                result = excel_service.generate_route(
+                    route_config=route_config,
+                    base_path=staged_base,
+                    output_path=local_output_path,
+                    new_date=entry.fecha_salida,
+                    sap_records=sap_records,
+                    force=False,
+                )
+        except FileResolutionError as e:
+            return _finish("error", source_file=source_file_label, error_category=e.category, error_message=str(e))
+        except CompositeRouteError as e:
+            return _finish(
+                "error", source_file=source_file_label, error_category="configuracion_ruta_faltante", error_message=str(e)
             )
+        except StorageError as e:
+            return _finish("error", source_file=source_file_label, error_category=e.category, error_message=str(e))
         except (OSError, PermissionError) as e:
             return _finish(
-                "error", source_file=str(base_path), error_category="error_escritura", error_message=str(e)
+                "error", source_file=source_file_label, error_category="error_escritura", error_message=str(e)
             )
         except excel_service.ExcelServiceError as e:
             return _finish(
-                "error", source_file=str(base_path), error_category="error_inesperado", error_message=str(e)
+                "error", source_file=source_file_label, error_category="error_inesperado", error_message=str(e)
             )
 
         report = validators.validate_workbook(local_output_path, route_config, expected_date=entry.fecha_salida)
@@ -267,7 +290,7 @@ def process_one_entry(
             # borra solo al salir del 'with': nunca llega a publicarse.
             return _finish(
                 "error",
-                source_file=str(base_path),
+                source_file=source_file_label,
                 error_category=_classify_validation_errors(report.errors),
                 error_message="; ".join(report.errors),
             )
@@ -275,7 +298,7 @@ def process_one_entry(
         try:
             published_path = storage.publish(local_output_path, destination_path, force=False)
         except StorageError as e:
-            return _finish("error", source_file=str(base_path), error_category=e.category, error_message=str(e))
+            return _finish("error", source_file=source_file_label, error_category=e.category, error_message=str(e))
 
     # 8-9. Registrar y solo AHORA (publicacion verificada) marcar como preparada.
     try:
@@ -286,7 +309,7 @@ def process_one_entry(
     return _finish(
         "success",
         output_file=str(published_path),
-        source_file=str(base_path),
+        source_file=source_file_label,
         client_count=result.client_count,
     )
 

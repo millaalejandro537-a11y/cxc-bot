@@ -345,6 +345,44 @@ def test_history_is_recorded_correctly(routes_root, sap_source, history, catalog
     assert row["duracion_ms"] is not None
 
 
+def test_composite_route_works_end_to_end_through_the_runner(tmp_path, history, catalog, calendar):
+    """La ruta compuesta Comayagua+Santa Cruz, ejecutada por el mismo
+    orquestador que cualquier otra ruta (no llamando directamente a
+    composite_route_service), con los archivos REALES de referencia."""
+    from cxc_bot.data_source import LocalMockDataSource
+
+    fixtures = "tests/fixtures/rutas_reales"
+    root = tmp_path / "RUTA VENDEDORES"
+    comayagua_dir = root / "José Carpio" / "Comayagua"
+    sta_cruz_dir = root / "José Carpio" / "Santa Cruz de Yojoa"
+    comayagua_dir.mkdir(parents=True)
+    sta_cruz_dir.mkdir(parents=True)
+    shutil.copy2(f"{fixtures}/COMAYAGUA JUNIO.xlsx", comayagua_dir / "COMAYAGUA junio.xlsx")
+    shutil.copy2(f"{fixtures}/STA CRUZ MAYO.xlsx", sta_cruz_dir / "STA CRUZ mayo.xlsx")
+
+    a = LocalMockDataSource(f"{fixtures}/COMAYAGUA JUNIO.xlsx", sheet_name="Hoja2").fetch_clients()
+    b = LocalMockDataSource(f"{fixtures}/STA CRUZ MAYO.xlsx", sheet_name="Hoja2").fetch_clients()
+    seen = {}
+    for rec in a + b:
+        seen.setdefault(rec.codigo, rec)
+    sap_source = FakeDataSource(records=list(seen.values()))
+
+    entries = [make_entry(entry_id="comayagua-1", vendor="José Carpio", route="Comayagua", fecha_salida=date(2026, 10, 15))]
+    result = run(entries, root, sap_source, history, catalog, calendar, today=date(2026, 10, 12))
+
+    assert result.succeeded == 1
+    job = result.routes[0]
+    assert job.output_file.endswith("COMAYAGUA 15 octubre 2026.xlsx")
+    assert job.client_count == 70  # 54 de Comayagua + 16 de Santa Cruz
+
+    published = comayagua_dir / "COMAYAGUA 15 octubre 2026.xlsx"
+    assert published.exists()
+
+    # Ninguno de los dos archivos originales se toco.
+    assert (comayagua_dir / "COMAYAGUA junio.xlsx").read_bytes() == open(f"{fixtures}/COMAYAGUA JUNIO.xlsx", "rb").read()
+    assert (sta_cruz_dir / "STA CRUZ mayo.xlsx").read_bytes() == open(f"{fixtures}/STA CRUZ MAYO.xlsx", "rb").read()
+
+
 # 13. el estado de la fuente solo cambia DESPUES del exito
 def test_schedule_state_only_changes_after_success(tmp_path, base_file, sap_source, history, catalog, calendar):
     schedule_path = tmp_path / "schedule.json"
