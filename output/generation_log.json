@@ -1,6 +1,7 @@
-2026-09-12 18:35:13,871 INFO cxc_bot.excel_service: Copia segura creada: origen=samples/CORTES septiembre.xlsx -> destino=output/CORTES octubre.xlsx
-2026-09-12 18:35:14,188 INFO cxc_bot.excel_service: Hoja2 reemplazada por completo: 1140 registros de clientes.
-2026-09-12 18:35:14,232 INFO cxc_bot.excel_service: Ruta generada: base=samples/CORTES septiembre.xlsx salida=output/CORTES octubre.xlsx fecha=2026-10-13 clientes=32 sap_registros=1140
+2026-09-12 19:09:32,466 INFO cxc_bot.excel_service: Copia segura creada: origen=samples/CORTES septiembre.xlsx -> destino=output/CORTES octubre.xlsx
+2026-09-12 19:09:32,814 INFO cxc_bot.excel_service: Hoja2 reemplazada por completo: 1140 registros de clientes.
+2026-09-12 19:09:32,863 INFO cxc_bot.excel_service: Valores calculados inyectados en 'CORTES': 65 celdas.
+2026-09-12 19:09:32,863 INFO cxc_bot.excel_service: Ruta generada: base=samples/CORTES septiembre.xlsx salida=output/CORTES octubre.xlsx fecha=2026-10-13 clientes=32 sap_registros=1140
 {
   "result": {
     "source_file": "samples/CORTES septiembre.xlsx",

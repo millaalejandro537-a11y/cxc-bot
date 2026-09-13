@@ -19,6 +19,19 @@ de tratar de "parchar" filas individuales, este motor:
 Esto garantiza que ninguna formula quede apuntando a la fila equivocada y
 que el formato quede identico sin importar cuantas filas se agreguen o
 quiten.
+
+Ademas: openpyxl NUNCA calcula formulas, y un archivo .xlsx recien escrito
+por openpyxl guarda las celdas de formula con su <v> (valor en cache) vacio.
+La mayoria de las veces Excel recalcula solo al abrir (por eso al inspeccionar
+el archivo con Excel real suele verse bien), pero no todos los visores lo
+hacen, y el encargo exige que el archivo se vea listo para imprimir sin que
+nadie tenga que forzar un recalculo. Por eso, despues de guardar, este modulo
+calcula el resultado real de cada VLOOKUP/SUM (con la misma logica de Excel:
+coincidencia exacta contra Hoja2, #N/A si el codigo no aparece, y el total
+se vuelve #N/A si algun saldo es #N/A) e inyecta ese valor directamente en el
+<v> de la celda dentro del XML ya guardado, sin tocar nada mas del archivo
+(por eso no se usa una libreria de recalculo genérica: reescribirian todo el
+archivo y se perderia el formato).
 """
 
 from __future__ import annotations
@@ -26,10 +39,12 @@ from __future__ import annotations
 import copy
 import logging
 import shutil
+import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from xml.etree import ElementTree as ET
 
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
@@ -38,6 +53,15 @@ from .models import ClientEntry, GenerationResult, RouteConfig, SapClientRecord
 from .route_engine import Operation, apply_operations, validate_roster
 
 logger = logging.getLogger("cxc_bot.excel_service")
+
+_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_REL_DOC_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_REL_PKG_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+ET.register_namespace("", _MAIN_NS)
+
+
+def _qn(tag: str) -> str:
+    return f"{{{_MAIN_NS}}}{tag}"
 
 MAIN_COLUMNS = ["num_col", "code_col", "name_col", "factura_col", "saldo_col", "obs_col"]
 
@@ -243,6 +267,170 @@ def replace_sap_table(ws: Worksheet, records: List[SapClientRecord], config: Rou
     logger.info("Hoja2 reemplazada por completo: %d registros de clientes.", len(records))
 
 
+NA_ERROR = "#N/A"
+
+
+def build_sap_lookup_map(sap_records: List[SapClientRecord]) -> Dict[str, Tuple[str, float]]:
+    """Replica VLOOKUP(..., 0): coincidencia exacta, gana la PRIMERA aparicion
+    del codigo (igual que Excel al buscar de arriba hacia abajo)."""
+
+    lookup: Dict[str, Tuple[str, float]] = {}
+    for rec in sap_records:
+        if rec.codigo not in lookup:
+            lookup[rec.codigo] = (rec.nombre, rec.saldo)
+    return lookup
+
+
+def sap_lookup_map_from_sheet(ws_sap: Worksheet, config: RouteConfig) -> Dict[str, Tuple[str, float]]:
+    """Igual que build_sap_lookup_map pero leyendo Hoja2 directamente (se usa en
+    edit_route, donde Hoja2 no cambia y no se reciben sap_records nuevos)."""
+
+    from openpyxl.utils import column_index_from_string
+
+    code_idx = column_index_from_string(config.sap_code_col)
+    name_idx = column_index_from_string(config.sap_name_col)
+    saldo_idx = column_index_from_string(config.sap_saldo_col)
+
+    lookup: Dict[str, Tuple[str, float]] = {}
+    for row in range(2, ws_sap.max_row + 1):
+        codigo = ws_sap.cell(row=row, column=code_idx).value
+        if codigo is None:
+            continue
+        codigo = str(codigo).strip()
+        if codigo not in lookup:
+            nombre = ws_sap.cell(row=row, column=name_idx).value
+            saldo = ws_sap.cell(row=row, column=saldo_idx).value
+            lookup[codigo] = (nombre or "", saldo if isinstance(saldo, (int, float)) else 0.0)
+    return lookup
+
+
+def compute_cached_values(
+    config: RouteConfig,
+    roster: List[ClientEntry],
+    total_row: int,
+    sap_lookup: Dict[str, Tuple[str, float]],
+) -> Dict[str, Tuple[str, object]]:
+    """Calcula, EXACTAMENTE como lo haria Excel, el resultado de cada formula
+    de la hoja principal: VLOOKUP de nombre/saldo por fila y el SUM del total.
+    Devuelve {celda: (tipo, valor)} con tipo en {'n', 'str', 'e'}."""
+
+    cells: Dict[str, Tuple[str, object]] = {}
+    total_is_error = False
+    total_sum = 0.0
+
+    for i, entry in enumerate(roster):
+        row = config.data_start_row + i
+        name_ref = f"{config.name_col}{row}"
+        saldo_ref = f"{config.saldo_col}{row}"
+        match = sap_lookup.get(entry.codigo)
+        if match is None:
+            cells[name_ref] = ("e", NA_ERROR)
+            cells[saldo_ref] = ("e", NA_ERROR)
+            total_is_error = True
+        else:
+            nombre, saldo = match
+            cells[name_ref] = ("str", nombre)
+            cells[saldo_ref] = ("n", float(saldo) if isinstance(saldo, (int, float)) else 0.0)
+            if not total_is_error:
+                total_sum += float(saldo) if isinstance(saldo, (int, float)) else 0.0
+
+    if roster:
+        total_ref = f"{config.total_value_col}{total_row}"
+        cells[total_ref] = ("e", NA_ERROR) if total_is_error else ("n", total_sum)
+
+    return cells
+
+
+def _format_cached_number(value) -> str:
+    value = float(value)
+    if value == int(value):
+        return str(int(value))
+    return repr(round(value, 6))
+
+
+def _worksheet_part_for_sheet(zf: zipfile.ZipFile, sheet_name: str) -> str:
+    wb_root = ET.fromstring(zf.read("xl/workbook.xml"))
+    sheets_el = wb_root.find(_qn("sheets"))
+    rid = None
+    for sheet_el in sheets_el.findall(_qn("sheet")):
+        if sheet_el.get("name") == sheet_name:
+            rid = sheet_el.get(f"{{{_REL_DOC_NS}}}id")
+            break
+    if rid is None:
+        raise StructureError(f"No se encontro la hoja '{sheet_name}' en xl/workbook.xml")
+
+    rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    for rel_el in rels_root.findall(f"{{{_REL_PKG_NS}}}Relationship"):
+        if rel_el.get("Id") == rid:
+            target = rel_el.get("Target").lstrip("/")
+            return target if target.startswith("xl/") else f"xl/{target}"
+
+    raise StructureError(f"No se pudo resolver la parte XML de la hoja '{sheet_name}' (rId={rid})")
+
+
+def inject_cached_formula_values(
+    xlsx_path: Path, sheet_name: str, cell_values: Dict[str, Tuple[str, object]]
+) -> None:
+    """Escribe el resultado calculado de cada formula directamente en el <v>
+    de su celda, dentro del XML YA GUARDADO por openpyxl. No se toca ninguna
+    otra parte del archivo (estilos, anchos, combinaciones, impresion, Hoja2),
+    asi que el formato queda exactamente igual; solo dejan de verse vacias las
+    formulas al abrir el archivo en cualquier programa."""
+
+    if not cell_values:
+        return
+
+    xlsx_path = Path(xlsx_path)
+    with zipfile.ZipFile(xlsx_path, "r") as zin:
+        names = zin.namelist()
+        contents = {n: zin.read(n) for n in names}
+        part = _worksheet_part_for_sheet(zin, sheet_name)
+
+    root = ET.fromstring(contents[part])
+    sheet_data = root.find(_qn("sheetData"))
+    pending = dict(cell_values)
+
+    for row_el in sheet_data.findall(_qn("row")):
+        for c_el in row_el.findall(_qn("c")):
+            ref = c_el.get("r")
+            if ref not in pending:
+                continue
+            f_el = c_el.find(_qn("f"))
+            if f_el is None:
+                raise ExcelServiceError(
+                    f"La celda {ref} deberia contener una formula pero no la tiene; "
+                    "se aborta la inyeccion de valores calculados por seguridad."
+                )
+            kind, value = pending.pop(ref)
+            v_el = c_el.find(_qn("v"))
+            if v_el is None:
+                v_el = ET.SubElement(c_el, _qn("v"))
+            if kind == "str":
+                c_el.set("t", "str")
+                v_el.text = str(value)
+            elif kind == "e":
+                c_el.set("t", "e")
+                v_el.text = str(value)
+            else:
+                c_el.attrib.pop("t", None)
+                v_el.text = _format_cached_number(value)
+
+    if pending:
+        raise ExcelServiceError(
+            f"No se encontraron en '{sheet_name}' las celdas de formula esperadas: {sorted(pending)}"
+        )
+
+    contents[part] = ET.tostring(root, encoding="UTF-8", xml_declaration=True)
+
+    tmp_path = xlsx_path.with_suffix(xlsx_path.suffix + ".tmp")
+    with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in names:
+            zout.writestr(n, contents[n])
+    tmp_path.replace(xlsx_path)
+
+    logger.info("Valores calculados inyectados en '%s': %d celdas.", sheet_name, len(cell_values))
+
+
 def _peek_roster(path: Path, config: RouteConfig) -> List[ClientEntry]:
     """Lee el roster de un archivo SIN escribirlo nunca (ni siquiera .save()).
     Se usa para validar operaciones antes de crear cualquier archivo de salida,
@@ -306,7 +494,7 @@ def generate_route(
 
     ws_main[route_config.fecha_cell] = new_date
 
-    _rebuild_client_block(
+    new_total_row = _rebuild_client_block(
         ws_main,
         route_config,
         new_roster,
@@ -318,7 +506,13 @@ def generate_route(
 
     replace_sap_table(ws_sap, sap_records, route_config)
 
+    wb.calculation.fullCalcOnLoad = True
     wb.save(output_path)
+
+    sap_lookup = build_sap_lookup_map(sap_records)
+    cached_values = compute_cached_values(route_config, new_roster, new_total_row, sap_lookup)
+    inject_cached_formula_values(output_path, route_config.main_sheet, cached_values)
+
     logger.info(
         "Ruta generada: base=%s salida=%s fecha=%s clientes=%d sap_registros=%d",
         base_path,
@@ -366,6 +560,7 @@ def edit_route(
 
     wb = openpyxl.load_workbook(output_path)
     ws_main = _require_sheet(wb, route_config.main_sheet)
+    ws_sap = _require_sheet(wb, route_config.data_sheet)
 
     columns = _all_columns(route_config)
     old_roster = read_roster(ws_main, route_config)
@@ -374,8 +569,11 @@ def edit_route(
     total_row_template = _RowTemplate.capture(ws_main, old_total_row, columns)
 
     current_date = ws_main[route_config.fecha_cell].value
+    # Hoja2 no cambia en un edit_route; se lee ANTES de tocar el bloque de
+    # clientes (aunque no se solapan, es mas claro capturarlo temprano).
+    sap_lookup = sap_lookup_map_from_sheet(ws_sap, route_config)
 
-    _rebuild_client_block(
+    new_total_row = _rebuild_client_block(
         ws_main,
         route_config,
         new_roster,
@@ -385,7 +583,12 @@ def edit_route(
         clear_observaciones=False,
     )
 
+    wb.calculation.fullCalcOnLoad = True
     wb.save(output_path)
+
+    cached_values = compute_cached_values(route_config, new_roster, new_total_row, sap_lookup)
+    inject_cached_formula_values(output_path, route_config.main_sheet, cached_values)
+
     logger.info(
         "Ruta editada: origen=%s salida=%s operaciones=%d clientes_resultantes=%d",
         input_path,

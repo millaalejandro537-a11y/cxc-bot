@@ -117,6 +117,43 @@ def validate_workbook(
     if isinstance(total_formula, str) and "#REF!" in total_formula:
         errors.append(f"La formula de totales contiene #REF!: {total_formula}")
 
+    # --- Valores calculados (cache) ---
+    # No basta con que la formula exista: hay que comprobar que el archivo
+    # trae el resultado ya calculado, que es lo que cualquier programa
+    # muestra al abrirlo sin forzar un recalculo.
+    wb_values = openpyxl.load_workbook(path, data_only=True)
+    ws_main_values = wb_values[config.main_sheet]
+    computed_total = 0.0
+    total_has_error = False
+    for row in range(config.data_start_row, total_row):
+        name_val = ws_main_values[f"{config.name_col}{row}"].value
+        saldo_val = ws_main_values[f"{config.saldo_col}{row}"].value
+        codigo = ws_main[f"{config.code_col}{row}"].value
+        if name_val is None or (isinstance(name_val, str) and name_val.strip() == ""):
+            errors.append(f"Fila {row} ({codigo}): el nombre no tiene un valor calculado (formula sin resultado).")
+        elif isinstance(name_val, str) and name_val.strip().upper() in ("#N/A", "#REF!", "#VALUE!", "#NAME?"):
+            errors.append(f"Fila {row} ({codigo}): el nombre calculado es un error ({name_val}).")
+        if saldo_val is None:
+            errors.append(f"Fila {row} ({codigo}): el saldo no tiene un valor calculado (formula sin resultado).")
+        elif isinstance(saldo_val, str):
+            errors.append(f"Fila {row} ({codigo}): el saldo calculado es un error o texto ({saldo_val}), se esperaba un numero.")
+            total_has_error = True
+        elif isinstance(saldo_val, (int, float)):
+            computed_total += saldo_val
+
+    total_val = ws_main_values[f"{config.total_value_col}{total_row}"].value
+    if len(roster) > 0:
+        if total_val is None:
+            errors.append("El total de la ruta no tiene un valor calculado (formula sin resultado).")
+        elif isinstance(total_val, str):
+            errors.append(f"El total calculado de la ruta es un error ({total_val}).")
+        elif isinstance(total_val, (int, float)) and not total_has_error:
+            if abs(total_val - computed_total) > 0.01:
+                errors.append(
+                    f"El total calculado ({total_val}) no coincide con la suma de los saldos calculados ({computed_total})."
+                )
+    wb_values.close()
+
     # --- Observacion ---
     if expect_clear_observaciones:
         non_empty = [

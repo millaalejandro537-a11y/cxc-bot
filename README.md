@@ -17,7 +17,12 @@ Service Layer), genera el Excel del nuevo mes:
   combinaciones de celdas y configuracion de impresion,
 - opcionalmente aplica agregar / eliminar / mover / reordenar clientes en la
   misma corrida,
-- valida automaticamente el resultado antes de darlo por bueno.
+- **calcula y deja grabado el resultado de cada formula** (nombre, saldo,
+  total) para que el archivo se vea listo para imprimir apenas se abre, sin
+  que nadie tenga que forzar un recalculo,
+- valida automaticamente el resultado antes de darlo por bueno — incluyendo
+  que los valores calculados existan y sean correctos, no solo que la formula
+  este escrita.
 
 Tambien permite editar la lista de clientes de una ruta ya generada
 (`edit-route`) sin tener que regenerar el mes completo.
@@ -68,6 +73,35 @@ cambia la cantidad de clientes, el motor:
 
 Esto garantiza que ninguna formula quede apuntando a la fila equivocada y que
 el formato quede identico sin importar cuantos clientes se agreguen o quiten.
+
+### Por que el archivo se abre ya calculado (sin "Actualizar")
+
+openpyxl nunca calcula formulas: un archivo recien escrito por openpyxl guarda
+`=VLOOKUP(...)` con su valor en cache vacio. La mayoria de las veces Excel
+recalcula solo al abrir, pero no todos los visores lo hacen, y el encargo
+exige que el archivo se vea listo para imprimir sin que nadie tenga que
+forzar un recalculo manual. La solucion NO fue instalar LibreOffice (no
+estaba disponible en esta maquina) ni usar una libreria generica de
+recalculo (se probo la libreria `formulas`: calcula perfecto, pero su
+escritor de Excel destruye todo el formato — sin combinaciones de celdas,
+sin anchos de columna, fuente por defecto). En su lugar, `excel_service.py`:
+
+1. Calcula el resultado real de cada VLOOKUP/SUM con la misma logica de
+   Excel (coincidencia exacta contra Hoja2; `#N/A` si el codigo no existe; el
+   total se vuelve `#N/A` si algun saldo lo es), usando los mismos datos que
+   ya tiene en memoria (`compute_cached_values`).
+2. Inyecta ese resultado directamente en el `<v>` de cada celda de formula,
+   dentro del XML ya guardado por openpyxl (`inject_cached_formula_values`),
+   sin tocar ninguna otra parte del archivo — por eso el formato queda
+   exactamente igual.
+3. Ademas deja `fullCalcOnLoad=1` en las propiedades de calculo del libro,
+   como respaldo, para que Excel real igual recalcule si algo cambiara.
+
+Esto se verifico de dos formas: (a) leyendo el archivo con
+`openpyxl(data_only=True)`, que es exactamente lo que cualquier programa lee
+sin recalcular, y (b) con una prueba cruzada independiente usando la libreria
+`formulas` para evaluar el archivo de verdad y comparar contra los valores
+inyectados (`tests/test_formula_crosscheck.py`).
 
 ## 3. Estructura de carpetas
 
@@ -145,6 +179,7 @@ validacion en JSON por stdout, listo para que lo consuma otro programa.
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements-dev.txt  # agrega `formulas`, solo para una prueba cruzada de calculo
 python -m pytest tests/ -v
 ```
 
@@ -185,7 +220,14 @@ Despues de generar o editar, `validators.validate_workbook` revisa:
 - que `Observacion` quede vacia cuando corresponde (nuevo mes);
 - que `Hoja2` tenga el encabezado correcto y la cantidad de filas esperada;
 - (advertencia, no error) que todos los codigos de la ruta existan en
-  `Hoja2`, para anticipar un `#N/A` antes de imprimir.
+  `Hoja2`, para anticipar un `#N/A` antes de imprimir;
+- **que cada nombre y saldo tenga un valor YA CALCULADO** (no solo la
+  formula) y que ese valor no sea un error (`#N/A`, `#REF!`, etc.) — esto se
+  revisa releyendo el archivo con `data_only=True`, es decir, exactamente lo
+  que ve cualquier programa que lo abra sin recalcular. Una formula que
+  "existe" pero cuyo resultado calculado es un error **es un error de
+  validacion**, no una advertencia;
+- que el total calculado coincida con la suma de los saldos calculados.
 
 Un resultado con errores lanza `ValidationError` y detiene la corrida.
 
