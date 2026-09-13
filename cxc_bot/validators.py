@@ -1,0 +1,157 @@
+"""Validaciones automaticas post-generacion (seccion 10 del encargo).
+
+Cada funcion revisa un aspecto puntual y lanza ValidationError con un mensaje
+claro si algo no cuadra. `validate_all` corre todas y junta los errores.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import List, Optional
+
+import openpyxl
+
+from .excel_service import find_block_end, read_roster
+from .models import RouteConfig
+
+
+class ValidationError(Exception):
+    pass
+
+
+@dataclass
+class ValidationReport:
+    ok: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def validate_workbook(
+    path: Path,
+    config: RouteConfig,
+    expected_date: Optional[date] = None,
+    expected_client_count: Optional[int] = None,
+    expect_clear_observaciones: bool = True,
+    expected_sap_count: Optional[int] = None,
+) -> ValidationReport:
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    wb = openpyxl.load_workbook(path, data_only=False)
+
+    if config.main_sheet not in wb.sheetnames:
+        errors.append(f"Falta la hoja principal '{config.main_sheet}'.")
+    if config.data_sheet not in wb.sheetnames:
+        errors.append(f"Falta la hoja de datos SAP '{config.data_sheet}'.")
+    if errors:
+        return ValidationReport(ok=False, errors=errors, warnings=warnings)
+
+    ws_main = wb[config.main_sheet]
+    ws_sap = wb[config.data_sheet]
+
+    # --- Estructura: fecha ---
+    date_val = ws_main[config.fecha_cell].value
+    if date_val is None:
+        errors.append(f"La celda de fecha {config.fecha_cell} esta vacia.")
+    elif expected_date is not None:
+        got = date_val.date() if isinstance(date_val, datetime) else date_val
+        if got != expected_date:
+            errors.append(f"Fecha en {config.fecha_cell} es {got}, se esperaba {expected_date}.")
+
+    # --- Estructura: encabezados de la tabla principal ---
+    expected_headers = {
+        config.num_col: "#",
+        config.code_col: "Codigo",
+        config.factura_col: "No. Factura",
+        config.obs_col: "Observacion",
+    }
+    for col, expected_text in expected_headers.items():
+        actual = ws_main[f"{col}{config.header_row}"].value
+        if actual is None or expected_text.lower() not in str(actual).lower():
+            warnings.append(
+                f"Encabezado en {col}{config.header_row} es {actual!r}, se esperaba algo como {expected_text!r}."
+            )
+
+    # --- Clientes: roster ---
+    roster = read_roster(ws_main, config)
+    total_row = find_block_end(ws_main, config)
+
+    codes = [c.codigo for c in roster]
+    if len(codes) != len(set(codes)):
+        dupes = sorted({c for c in codes if codes.count(c) > 1})
+        errors.append(f"Codigos de cliente duplicados en la ruta: {dupes}")
+
+    invalid_codes = [c for c in codes if not c or not c.upper().startswith("C")]
+    if invalid_codes:
+        errors.append(f"Codigos de cliente invalidos (no inician con 'C'): {invalid_codes}")
+
+    for i, row in enumerate(range(config.data_start_row, total_row), start=1):
+        num_val = ws_main[f"{config.num_col}{row}"].value
+        if num_val != i:
+            errors.append(f"Numeracion no consecutiva en fila {row}: es {num_val}, se esperaba {i}.")
+
+    if expected_client_count is not None and len(roster) != expected_client_count:
+        errors.append(f"Se esperaban {expected_client_count} clientes y hay {len(roster)}.")
+
+    # --- Formulas ---
+    for row in range(config.data_start_row, total_row):
+        name_formula = ws_main[f"{config.name_col}{row}"].value
+        saldo_formula = ws_main[f"{config.saldo_col}{row}"].value
+        for label, formula in (("nombre", name_formula), ("saldo", saldo_formula)):
+            if not isinstance(formula, str) or not formula.startswith("="):
+                errors.append(f"Fila {row}: la formula de {label} no existe o no es formula ({formula!r}).")
+                continue
+            if "#REF!" in formula:
+                errors.append(f"Fila {row}: la formula de {label} contiene #REF! -> {formula}")
+            if config.data_sheet not in formula:
+                errors.append(f"Fila {row}: la formula de {label} no apunta a '{config.data_sheet}' -> {formula}")
+            expected_row_ref = f"{config.code_col}{row}"
+            if expected_row_ref not in formula:
+                errors.append(
+                    f"Fila {row}: la formula de {label} no referencia su propia fila ({expected_row_ref}) -> {formula}"
+                )
+
+    total_formula = ws_main[f"{config.total_value_col}{total_row}"].value
+    if isinstance(total_formula, str) and "#REF!" in total_formula:
+        errors.append(f"La formula de totales contiene #REF!: {total_formula}")
+
+    # --- Observacion ---
+    if expect_clear_observaciones:
+        non_empty = [
+            (row, ws_main[f"{config.obs_col}{row}"].value)
+            for row in range(config.data_start_row, total_row)
+            if ws_main[f"{config.obs_col}{row}"].value not in (None, "")
+        ]
+        if non_empty:
+            errors.append(f"Observacion deberia quedar vacia pero tiene datos en: {non_empty}")
+
+    # --- Hoja2 ---
+    sap_header = [ws_sap.cell(row=1, column=c).value for c in range(1, 7)]
+    if sap_header[0] is None or "digo" not in str(sap_header[0]).lower():
+        warnings.append(f"Encabezado de Hoja2 inesperado: {sap_header}")
+
+    sap_row_count = max(ws_sap.max_row - 1, 0)
+    if expected_sap_count is not None and sap_row_count != expected_sap_count:
+        errors.append(f"Hoja2 deberia tener {expected_sap_count} filas de datos y tiene {sap_row_count}.")
+
+    sap_codes = set()
+    for row in range(2, ws_sap.max_row + 1):
+        v = ws_sap.cell(row=row, column=1).value
+        if v is not None:
+            sap_codes.add(str(v).strip())
+
+    missing_in_sap = [c for c in codes if c not in sap_codes]
+    if missing_in_sap:
+        warnings.append(
+            f"Estos codigos de la ruta no existen en Hoja2 (el VLOOKUP dara #N/A): {missing_in_sap}"
+        )
+
+    wb.close()
+    return ValidationReport(ok=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def assert_valid(report: ValidationReport) -> None:
+    if not report.ok:
+        raise ValidationError("Validacion fallida:\n- " + "\n- ".join(report.errors))
