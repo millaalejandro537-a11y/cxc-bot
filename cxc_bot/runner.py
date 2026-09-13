@@ -24,6 +24,7 @@ from typing import List, Optional
 
 from . import excel_service, validators
 from .business_calendar import BusinessCalendar
+from .business_history import BusinessHistoryStore, client_entries_to_snapshot_inputs
 from .catalog import CatalogError, VendorCatalog
 from .composite_config import load_composite_route
 from .composite_route_service import (
@@ -32,10 +33,11 @@ from .composite_route_service import (
     generate_composite_route_local,
 )
 from .config import RouteNotFoundError, load_route_config
+from .config_versioning import ConfigVersionStore
 from .data_source import SapDataSource
 from .file_resolver import FileResolutionError, resolve_base_file
 from .history_store import ExecutionRecord, HistoryStore
-from .models import ScheduleEntry
+from .models import ClientEntry, ScheduleEntry
 from .notifier import Notifier, default_notifier
 from .schedule_source import ScheduleSource
 from .storage import LocalRouteStorage, RouteStorage, StorageError
@@ -133,6 +135,45 @@ def compute_due_entries(
     return due
 
 
+def _read_computed_values(path: Path, config) -> dict:
+    """Lee nombre/saldo YA CALCULADOS (data_only=True) del roster generado,
+    para poblar el snapshot de negocio con los mismos numeros que muestra
+    el Excel -- no se recalcula nada por separado."""
+
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        ws = wb[config.main_sheet]
+        result = {}
+        row = config.data_start_row
+        while True:
+            codigo = ws[f"{config.code_col}{row}"].value
+            if not codigo:
+                break
+            nombre = ws[f"{config.name_col}{row}"].value
+            saldo = ws[f"{config.saldo_col}{row}"].value
+            result[str(codigo).strip()] = (
+                nombre if isinstance(nombre, str) else None,
+                saldo if isinstance(saldo, (int, float)) else None,
+            )
+            row += 1
+        return result
+    finally:
+        wb.close()
+
+
+def _file_hash_or_none(path: Optional[Path]) -> Optional[str]:
+    if path is None:
+        return None
+    try:
+        import hashlib
+
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _classify_validation_errors(errors: List[str]) -> str:
     joined = " ".join(errors)
     if "#N/A" in joined:
@@ -153,6 +194,10 @@ def process_one_entry(
     schedule_source: ScheduleSource,
     run_id: str,
     storage: RouteStorage,
+    business_history: Optional[BusinessHistoryStore] = None,
+    config_versions: Optional[ConfigVersionStore] = None,
+    environment: str = "dev",
+    sap_is_mock: bool = True,
 ) -> RouteJobResult:
     natural_key = entry.natural_key
     started = time.monotonic()
@@ -235,6 +280,8 @@ def process_one_entry(
     with tempfile.TemporaryDirectory(prefix="cxc_bot_") as tmp_dir:
         local_work_dir = Path(tmp_dir)
         source_file_label = None
+        final_roster: Optional[List[ClientEntry]] = None
+        base_hash_source: Optional[Path] = None
         try:
             if composite:
                 # 3-4 (compuesta): cada componente resuelve y copia su propio
@@ -250,6 +297,7 @@ def process_one_entry(
                 )
                 source_file_label = "; ".join(f"{k}: {v}" for k, v in comp_result.component_base_files.items())
                 result = comp_result.generation
+                final_roster = comp_result.combined_roster
             else:
                 # 3 (simple): un solo archivo base.
                 base_path = resolve_base_file(
@@ -258,6 +306,7 @@ def process_one_entry(
                 source_file_label = str(base_path)
                 destination_path = base_path.parent / output_filename
                 staged_base = storage.stage_base_file(base_path, local_work_dir)
+                base_hash_source = staged_base
                 local_output_path = local_work_dir / output_filename
                 result = excel_service.generate_route(
                     route_config=route_config,
@@ -267,6 +316,7 @@ def process_one_entry(
                     sap_records=sap_records,
                     force=False,
                 )
+                final_roster = excel_service.peek_roster(local_output_path, route_config)
         except FileResolutionError as e:
             return _finish("error", source_file=source_file_label, error_category=e.category, error_message=str(e))
         except CompositeRouteError as e:
@@ -300,6 +350,32 @@ def process_one_entry(
         except StorageError as e:
             return _finish("error", source_file=source_file_label, error_category=e.category, error_message=str(e))
 
+        # Snapshot de negocio (opcional): solo si se paso un BusinessHistoryStore.
+        # Se arma ANTES de que se borre el directorio temporal, leyendo los
+        # valores YA CALCULADOS del propio archivo generado.
+        if business_history is not None and final_roster is not None:
+            computed = _read_computed_values(local_output_path, route_config)
+            snapshot_clients = client_entries_to_snapshot_inputs(final_roster, computed)
+            config_version_id = config_versions.current_version_id() if config_versions else None
+            try:
+                business_history.create_snapshot(
+                    environment=environment,
+                    vendor=canonical_vendor,
+                    route=canonical_route,
+                    fecha_salida=entry.fecha_salida,
+                    clients=snapshot_clients,
+                    execution_id=run_id,
+                    archivo_final=str(published_path),
+                    archivo_base=source_file_label,
+                    archivo_base_hash=_file_hash_or_none(base_hash_source),
+                    config_version_id=config_version_id,
+                    fuente_programacion=type(schedule_source).__name__,
+                    fuente_datos=sap_source_label,
+                    fuente_datos_es_mock=sap_is_mock,
+                )
+            except Exception:
+                pass  # el snapshot de negocio nunca debe tumbar una publicacion ya exitosa
+
     # 8-9. Registrar y solo AHORA (publicacion verificada) marcar como preparada.
     try:
         schedule_source.mark_prepared(entry.id)
@@ -328,6 +404,10 @@ def process_due_routes(
     today: Optional[date] = None,
     run_id: Optional[str] = None,
     storage: Optional[RouteStorage] = None,
+    business_history: Optional[BusinessHistoryStore] = None,
+    config_versions: Optional[ConfigVersionStore] = None,
+    environment: str = "dev",
+    sap_is_mock: bool = True,
 ) -> ProcessRunResult:
     history = history or HistoryStore()
     notifier = notifier or default_notifier()
@@ -393,6 +473,10 @@ def process_due_routes(
                 schedule_source=schedule_source,
                 run_id=run_id,
                 storage=storage,
+                business_history=business_history,
+                config_versions=config_versions,
+                environment=environment,
+                sap_is_mock=sap_is_mock,
             )
         except Exception as e:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del lote
             job_result = RouteJobResult(

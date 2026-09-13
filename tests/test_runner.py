@@ -383,6 +383,63 @@ def test_composite_route_works_end_to_end_through_the_runner(tmp_path, history, 
     assert (sta_cruz_dir / "STA CRUZ mayo.xlsx").read_bytes() == open(f"{fixtures}/STA CRUZ MAYO.xlsx", "rb").read()
 
 
+def test_runner_creates_business_snapshot_with_component_traceability(tmp_path, history, catalog, calendar):
+    """El runner, cuando se le pasa un BusinessHistoryStore, crea el
+    snapshot de negocio solo, con el componente correcto por cliente para
+    una ruta compuesta -- y con el candado prod+mock->dev funcionando
+    tambien a traves del runner completo, no solo llamando a
+    BusinessHistoryStore directamente."""
+    from cxc_bot.business_history import BusinessHistoryStore
+    from cxc_bot.config_versioning import ConfigVersionStore
+    from cxc_bot.data_source import LocalMockDataSource
+
+    fixtures = "tests/fixtures/rutas_reales"
+    root = tmp_path / "RUTA VENDEDORES"
+    comayagua_dir = root / "José Carpio" / "Comayagua"
+    sta_cruz_dir = root / "José Carpio" / "Santa Cruz de Yojoa"
+    comayagua_dir.mkdir(parents=True)
+    sta_cruz_dir.mkdir(parents=True)
+    shutil.copy2(f"{fixtures}/COMAYAGUA JUNIO.xlsx", comayagua_dir / "COMAYAGUA junio.xlsx")
+    shutil.copy2(f"{fixtures}/STA CRUZ MAYO.xlsx", sta_cruz_dir / "STA CRUZ mayo.xlsx")
+
+    a = LocalMockDataSource(f"{fixtures}/COMAYAGUA JUNIO.xlsx", sheet_name="Hoja2").fetch_clients()
+    b = LocalMockDataSource(f"{fixtures}/STA CRUZ MAYO.xlsx", sheet_name="Hoja2").fetch_clients()
+    seen = {}
+    for rec in a + b:
+        seen.setdefault(rec.codigo, rec)
+    sap_source = FakeDataSource(records=list(seen.values()))
+
+    business_history = BusinessHistoryStore(tmp_path / "business.sqlite3")
+    config_versions = ConfigVersionStore(db_path=tmp_path / "config_versions.sqlite3")
+
+    entries = [make_entry(entry_id="comayagua-1", vendor="José Carpio", route="Comayagua", fecha_salida=date(2026, 10, 15))]
+    result = process_due_routes(
+        schedule_source=FakeScheduleSource(entries), catalog=catalog, calendar=calendar, lead_business_days=3,
+        routes_root=root, sap_data_source=sap_source, sap_source_label="fake", history=history,
+        today=date(2026, 10, 12), business_history=business_history, config_versions=config_versions,
+        environment="prod", sap_is_mock=True,  # candado: debe degradarse a 'dev'
+    )
+    assert result.succeeded == 1
+
+    snapshot = business_history.find_vigente("José Carpio", "Comayagua", date(2026, 10, 15))
+    assert snapshot is not None
+    assert snapshot["environment"] == "dev"  # degradado: prod + mock no se permite
+    assert snapshot["cantidad_clientes"] == 70
+    assert snapshot["config_version_id"]
+
+    rows = business_history.get_snapshot_clients(snapshot["snapshot_id"])
+    componentes = {r["componente"] for r in rows}
+    assert componentes == {"Comayagua", "Santa Cruz de Yojoa"}
+    comayagua_rows = [r for r in rows if r["componente"] == "Comayagua"]
+    santa_cruz_rows = [r for r in rows if r["componente"] == "Santa Cruz de Yojoa"]
+    assert len(comayagua_rows) == 54
+    assert len(santa_cruz_rows) == 16
+    # Comayagua ocupa las primeras posiciones, Santa Cruz las ultimas.
+    assert max(r["posicion"] for r in comayagua_rows) < min(r["posicion"] for r in santa_cruz_rows)
+    # los nombres/saldos vienen YA CALCULADOS, no vacios
+    assert all(r["nombre"] for r in rows)
+
+
 # 13. el estado de la fuente solo cambia DESPUES del exito
 def test_schedule_state_only_changes_after_success(tmp_path, base_file, sap_source, history, catalog, calendar):
     schedule_path = tmp_path / "schedule.json"
