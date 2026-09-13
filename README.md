@@ -316,7 +316,10 @@ business_calendar.py -> dias no habiles de la semana + feriados (config/scheduli
                         y el calculo de "N dias habiles antes de una fecha".
 schedule_source.py   -> ScheduleSource (interfaz) + LocalScheduleSource (JSON).
 file_resolver.py     -> localiza <routes_root>/<Vendedor>/<Ruta>/archivo base
-                        mas reciente. Si hay ambiguedad, aborta (nunca adivina).
+                        mas reciente por el MES del nombre del archivo (no por
+                        fecha de modificacion: abrir/guardar un Excel viejo no
+                        debe hacerlo parecer el mas nuevo). Si hay ambiguedad,
+                        aborta (nunca adivina).
 history_store.py     -> SQLite: registro de cada ejecucion (exito/error/omitida).
                         Es la fuente de verdad de la idempotencia.
 notifier.py          -> Notifier (interfaz) + ConsoleNotifier/LogNotifier hoy;
