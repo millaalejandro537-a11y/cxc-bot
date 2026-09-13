@@ -190,16 +190,20 @@ def test_missing_base_file(tmp_path, sap_source, history, catalog, calendar):
 
 # 7. dos posibles archivos base (ambiguedad)
 def test_ambiguous_base_files(tmp_path, base_file, sap_source, history, catalog, calendar):
+    """La resolucion prioriza el mes del nombre, asi que dos meses DISTINTOS
+    (agosto/septiembre) ya no son ambiguos aunque su mtime este muy cerca
+    (ver tests/test_file_resolver.py). La ambiguedad real del runner ahora
+    solo puede pasar cuando dos archivos comparten el MISMO mes."""
     import os
 
     root = tmp_path / "RUTA VENDEDORES"
     route_dir = root / "Eric Brizuela" / "Cortes"
     route_dir.mkdir(parents=True)
-    shutil.copy2(base_file, route_dir / "CORTES agosto.xlsx")
     shutil.copy2(base_file, route_dir / "CORTES septiembre.xlsx")
+    shutil.copy2(base_file, route_dir / "CORTES  septiembre.xlsx")  # doble espacio: mismo mes, otro archivo
     now = 1_700_000_000.0
-    os.utime(route_dir / "CORTES agosto.xlsx", (now, now))
-    os.utime(route_dir / "CORTES septiembre.xlsx", (now + 0.1, now + 0.1))  # practicamente empatado
+    os.utime(route_dir / "CORTES septiembre.xlsx", (now, now))
+    os.utime(route_dir / "CORTES  septiembre.xlsx", (now + 0.1, now + 0.1))  # practicamente empatado
 
     entries = [make_entry()]
     result = run(entries, root, sap_source, history, catalog, calendar, today=date(2026, 10, 8))

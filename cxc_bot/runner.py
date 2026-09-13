@@ -209,7 +209,9 @@ def process_one_entry(
 
     # 3. Archivo base mas reciente.
     try:
-        base_path = resolve_base_file(routes_root, canonical_vendor, canonical_route, route_config)
+        base_path = resolve_base_file(
+            routes_root, canonical_vendor, canonical_route, route_config, reference_date=entry.fecha_salida
+        )
     except FileResolutionError as e:
         return _finish("error", error_category=e.category, error_message=str(e))
 
