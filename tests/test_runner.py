@@ -484,6 +484,58 @@ def test_due_calculation_matches_business_example():
     assert due_on_sunday == []
 
 
+# --- Catch-up (seccion 19): la Mac pudo estar apagada varios dias ----------
+def test_catchup_processes_a_recently_missed_entry(routes_root, sap_source, history, catalog, calendar):
+    """La Mac estuvo apagada unos dias: la salida sigue dentro de la
+    ventana de catch-up y se genera igual, con normalidad."""
+    entries = [make_entry(fecha_salida=date(2026, 10, 13))]  # due desde el 9
+    result_windowed = process_due_routes(
+        schedule_source=FakeScheduleSource(entries), catalog=catalog, calendar=calendar, lead_business_days=3,
+        routes_root=routes_root, sap_data_source=sap_source, sap_source_label="fake", history=history,
+        today=date(2026, 10, 16), catchup_window_days=14,
+    )
+    assert result_windowed.succeeded == 1
+
+
+def test_catchup_reports_an_entry_too_old_as_expired_without_generating_it(
+    routes_root, sap_source, history, catalog, calendar
+):
+    """Algo quedo pendiente mucho mas alla de la ventana configurada: no se
+    genera automaticamente (podria ya no tener sentido de negocio), pero
+    tampoco desaparece en silencio -- queda registrado como
+    'catchup_expirado' para revision manual."""
+    entries = [make_entry(fecha_salida=date(2026, 9, 1))]  # muy atras
+    result = process_due_routes(
+        schedule_source=FakeScheduleSource(entries), catalog=catalog, calendar=calendar, lead_business_days=3,
+        routes_root=routes_root, sap_data_source=sap_source, sap_source_label="fake", history=history,
+        today=date(2026, 10, 16), catchup_window_days=14,
+    )
+    assert result.processed == 1
+    assert result.failed == 1
+    assert result.routes[0].error_category == "catchup_expirado"
+    assert sap_source.calls == 0  # ni se molesta en pedir datos SAP para algo que no va a procesar
+
+    # queda visible en el historial tecnico para revision manual, no se pierde.
+    rows = history.find_by_route("Cortés", vendor="Erick Brizuela")
+    assert len(rows) == 1
+    assert rows[0]["error_categoria"] == "catchup_expirado"
+
+    # y no se genero ningun archivo.
+    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES *.xlsx"))
+    assert len(generated) == 0 or all("septiembre" in g.name for g in generated)  # solo el original, si acaso
+
+
+def test_without_catchup_window_old_entries_are_processed_normally(
+    routes_root, sap_source, history, catalog, calendar
+):
+    """Sin ventana configurada (catchup_window_days=None, el default), el
+    comportamiento es el de siempre: se procesa sin importar que tan vieja
+    sea la salida -- el limite es opt-in."""
+    entries = [make_entry(fecha_salida=date(2026, 9, 1))]
+    result = run(entries, routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 16))
+    assert result.succeeded == 1
+
+
 # 15. futura sustitucion de ScheduleSource
 def test_runner_works_with_any_schedule_source_implementation(routes_root, sap_source, history, catalog, calendar):
     """FakeScheduleSource no es LocalScheduleSource ni la conoce: prueba que

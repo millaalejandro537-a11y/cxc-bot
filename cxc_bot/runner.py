@@ -120,19 +120,54 @@ class ProcessRunResult:
 
 
 def compute_due_entries(
-    entries: List[ScheduleEntry], today: date, lead_business_days: int, calendar: BusinessCalendar
+    entries: List[ScheduleEntry],
+    today: date,
+    lead_business_days: int,
+    calendar: BusinessCalendar,
+    catchup_window_days: Optional[int] = None,
 ) -> List[ScheduleEntry]:
     """Solo las 'programada' + aprobadas, y solo si ya llegamos a su fecha de
-    preparacion (N dias habiles antes de la salida)."""
+    preparacion (N dias habiles antes de la salida). Si se da
+    `catchup_window_days`, una entrada cuya fecha_salida ya quedo mas atras
+    que esa ventana NO se procesa aqui (ver compute_expired_entries): la Mac
+    pudo estar apagada/dormida varios dias, pero no se re-intenta indefinida
+    e implicitamente algo demasiado viejo (seccion 19)."""
 
     due = []
     for entry in entries:
         if entry.estado != "programada" or not entry.aprobado:
             continue
         due_date = calendar.subtract_business_days(entry.fecha_salida, lead_business_days)
-        if today >= due_date:
-            due.append(entry)
+        if today < due_date:
+            continue
+        if catchup_window_days is not None and (today - entry.fecha_salida).days > catchup_window_days:
+            continue
+        due.append(entry)
     return due
+
+
+def compute_expired_entries(
+    entries: List[ScheduleEntry],
+    today: date,
+    lead_business_days: int,
+    calendar: BusinessCalendar,
+    catchup_window_days: int,
+) -> List[ScheduleEntry]:
+    """El complemento de compute_due_entries cuando hay ventana de catch-up:
+    entradas que ya estaban due pero quedaron fuera de la ventana. Se
+    reportan como fallo especifico (categoria 'catchup_expirado') en vez de
+    procesarse o de desaparecer en silencio."""
+
+    expired = []
+    for entry in entries:
+        if entry.estado != "programada" or not entry.aprobado:
+            continue
+        due_date = calendar.subtract_business_days(entry.fecha_salida, lead_business_days)
+        if today < due_date:
+            continue
+        if (today - entry.fecha_salida).days > catchup_window_days:
+            expired.append(entry)
+    return expired
 
 
 def _read_computed_values(path: Path, config) -> dict:
@@ -408,6 +443,7 @@ def process_due_routes(
     config_versions: Optional[ConfigVersionStore] = None,
     environment: str = "dev",
     sap_is_mock: bool = True,
+    catchup_window_days: Optional[int] = None,
 ) -> ProcessRunResult:
     history = history or HistoryStore()
     notifier = notifier or default_notifier()
@@ -416,9 +452,48 @@ def process_due_routes(
     run_id = run_id or f"{today.isoformat()}-{uuid.uuid4().hex[:8]}"
 
     entries = schedule_source.list_entries()
-    due = compute_due_entries(entries, today, lead_business_days, calendar)
+    due = compute_due_entries(entries, today, lead_business_days, calendar, catchup_window_days)
 
     run_result = ProcessRunResult(run_id=run_id)
+
+    if catchup_window_days is not None:
+        expired = compute_expired_entries(entries, today, lead_business_days, calendar, catchup_window_days)
+        for entry in expired:
+            days_late = (today - entry.fecha_salida).days
+            job_result = RouteJobResult(
+                vendor=entry.vendor,
+                route=entry.route,
+                fecha_salida=entry.fecha_salida,
+                natural_key=entry.natural_key,
+                status="error",
+                schedule_entry_id=entry.id,
+                error_category="catchup_expirado",
+                error_message=(
+                    f"La fecha de salida quedo {days_late} dias atras, mas alla de la ventana de "
+                    f"catch-up configurada ({catchup_window_days} dias). No se genero automaticamente; "
+                    "requiere revision manual."
+                ),
+            )
+            history.record(
+                ExecutionRecord(
+                    run_id=run_id,
+                    natural_key=entry.natural_key,
+                    schedule_entry_id=entry.id,
+                    vendor=entry.vendor,
+                    route=entry.route,
+                    fecha_salida=entry.fecha_salida,
+                    estado="error",
+                    error_categoria="catchup_expirado",
+                    error_mensaje=job_result.error_message,
+                )
+            )
+            run_result.routes.append(job_result)
+            notifier.notify_error(
+                f"{entry.route} ({entry.fecha_salida}) quedo fuera de la ventana de catch-up y no se generara "
+                "automaticamente.",
+                job_result.to_dict(),
+            )
+
     if not due:
         return run_result
 
