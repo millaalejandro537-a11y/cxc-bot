@@ -82,3 +82,28 @@ class GenerationResult:
     client_count: int
     operations_applied: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+
+
+@dataclass
+class ScheduleEntry:
+    """Una salida programada: 'Fulano tiene la ruta X el dia Y'.
+
+    Viene de un ScheduleSource (hoy: LocalScheduleSource; manana: InSitu).
+    `natural_key` identifica la salida por sus datos de negocio (vendedor +
+    ruta + fecha_salida), no por el id interno de la fuente, para que la
+    idempotencia sobreviva un cambio de fuente de programacion."""
+
+    id: str
+    vendor: str
+    route: str
+    fecha_salida: date
+    fecha_regreso: Optional[date] = None
+    observacion: Optional[str] = None
+    estado: str = "programada"
+    aprobado: bool = False
+
+    @property
+    def natural_key(self) -> str:
+        from .text_utils import normalize_key
+
+        return f"{self.fecha_salida.isoformat()}::{normalize_key(self.vendor)}::{normalize_key(self.route)}"

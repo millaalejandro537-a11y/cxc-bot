@@ -5,3 +5,6 @@ __pycache__/
 logs/*.log
 output/*.xlsx
 tests/fixtures/*.xlsx
+data/history.sqlite3
+data/*.tmp
+samples/RUTA VENDEDORES/**/*octubre*.xlsx

@@ -260,8 +260,8 @@ n8n (via su nodo Execute Command, o un wrapper HTTP delgado alrededor de
 ## 10. Limitaciones actuales (Fase 1)
 
 - No hay conexion real a SAP: se usa `LocalMockDataSource` (Excel/CSV local).
-- No hay integracion con n8n todavia (la CLI esta lista para que se conecte).
-- No hay calendario de vendedores automatico.
+- No hay calendario de vendedores automatico propio (ver Fase 2: se usa una
+  fuente de programacion reemplazable en vez de construir uno).
 - `RouteConfig` asume que la hoja de datos SAP tiene la misma forma que
   `Hoja2` (6 columnas, codigo en A). Si una ruta futura usa una forma
   distinta, se agrega su propia entrada en `config/routes.json` (los nombres
@@ -272,3 +272,201 @@ n8n (via su nodo Execute Command, o un wrapper HTTP delgado alrededor de
   corrige ese dato: preserva exactamente lo que trae el archivo. Se
   documenta aqui para que el negocio decida si el archivo piloto necesita
   corregirse antes de producción.
+
+---
+
+# Fase 2: orquestacion automatica (process-due-routes)
+
+Todo lo de la Fase 1 (motor de Excel) sigue exactamente igual — Fase 2 es
+una capa nueva que se apoya en el, sin tocarlo. El objetivo: poder preguntar
+"¿que rutas debo preparar ahora?" y que el sistema resuelva todo solo, listo
+para que un orquestador (hoy: el propio CLI; manana: n8n) lo dispare.
+
+```
+Fuente de programacion -> ¿esta due? -> validar contra el catalogo oficial
+  -> config de la ruta -> archivo base mas reciente -> datos SAP (una vez
+  por corrida) -> generar con el motor de Fase 1 -> validar -> guardar junto
+  al base -> registrar en el historial -> marcar preparada (si tuvo exito)
+```
+
+Dos piezas se dejaron **intencionalmente reemplazables**, porque van a
+cambiar pronto (InSitu en ~1 mes; SAP Service Layer despues) y no se quiso
+construir infraestructura propia para ninguna de las dos:
+
+- **Programacion de rutas**: interfaz `ScheduleSource` (`schedule_source.py`).
+  Hoy: `LocalScheduleSource`, un JSON simple y editable a mano
+  (`data/schedule.json`). El dia que exista InSitu, se implementa
+  `InsituScheduleSource.list_entries()` con la misma forma y nada mas en el
+  sistema cambia — ni siquiera hace falta que InSitu permita escribir de
+  vuelta el estado (ver Idempotencia mas abajo).
+- **Datos de clientes**: sigue siendo `SapDataSource` de la Fase 1
+  (`LocalMockDataSource` hoy, `SapServiceLayerDataSource` despues). Sin
+  cambios aqui, Fase 2 solo la reutiliza.
+
+## 11. Modulos nuevos
+
+```
+text_utils.py       -> normalizacion de texto compartida (sin acentos,
+                        mayusculas) para comparar vendedor/ruta sin depender
+                        de que el texto venga identico desde distintas fuentes.
+catalog.py           -> catalogo oficial vendedor -> rutas (config/vendor_catalog.json).
+                        Valida que una ruta pertenezca a su vendedor; NO confia
+                        en texto suelto heredado del Excel.
+business_calendar.py -> dias no habiles de la semana + feriados (config/scheduling.json)
+                        y el calculo de "N dias habiles antes de una fecha".
+schedule_source.py   -> ScheduleSource (interfaz) + LocalScheduleSource (JSON).
+file_resolver.py     -> localiza <routes_root>/<Vendedor>/<Ruta>/archivo base
+                        mas reciente. Si hay ambiguedad, aborta (nunca adivina).
+history_store.py     -> SQLite: registro de cada ejecucion (exito/error/omitida).
+                        Es la fuente de verdad de la idempotencia.
+notifier.py          -> Notifier (interfaz) + ConsoleNotifier/LogNotifier hoy;
+                        WhatsApp/correo/Slack despues, sin tocar el runner.
+runner.py            -> orquesta todo lo anterior: compute_due_entries(),
+                        process_one_entry(), process_due_routes().
+```
+
+## 12. Configuracion
+
+```
+config/vendor_catalog.json  -> catalogo oficial (vendedor -> lista de rutas).
+config/scheduling.json      -> dias_habiles_anticipacion (3 por defecto),
+                                dias_no_habiles_semana, feriados (vacio hoy,
+                                se agregan como ["YYYY-MM-DD", ...]),
+                                routes_root, sap_mock_data_path.
+data/schedule.json           -> la programacion en si (que sale, cuando, aprobada
+                                o no). Es DATO de negocio, no configuracion del
+                                sistema, por eso vive fuera de config/.
+data/history.sqlite3         -> se crea solo; historial de ejecuciones.
+```
+
+`config/routes.json` (de Fase 1) se extiende con una entrada por cada ruta
+real que exista bajo `routes_root` — el runner busca la config por el nombre
+de ruta del catalogo, normalizado (acentos/mayusculas no importan).
+
+## 13. Como se ejecuta
+
+```bash
+# Ver que rutas estan due HOY y generarlas:
+python -m cxc_bot.cli process-due-routes --json
+
+# Con una fecha "de hoy" fija (para pruebas o para reprocesar un dia atrasado):
+python -m cxc_bot.cli process-due-routes --today 2026-10-12 --json
+
+# Consultar el historial ("¿cuando se genero Cortes de octubre?"):
+python -m cxc_bot.cli history --route Cortés --vendor "Eric Brizuela" --json
+```
+
+Salida de `process-due-routes --json` (exactamente lo que consume n8n):
+
+```json
+{
+  "run_id": "2026-10-12-c567acb6",
+  "status": "partial",
+  "processed": 4,
+  "succeeded": 2,
+  "skipped": 0,
+  "failed": 2,
+  "routes": [
+    {"vendor": "Eric Brizuela", "route": "Cortés", "fecha_salida": "2026-10-13",
+     "status": "success", "output_file": ".../CORTES octubre.xlsx", "client_count": 32, ...},
+    {"vendor": "José Carpio", "route": "Occidente", "fecha_salida": "2026-10-14",
+     "status": "error", "error_category": "configuracion_ruta_faltante", "error_message": "..."}
+  ]
+}
+```
+
+`status` es `"success"` (todas bien), `"partial"` (alguna fallo pero otras no)
+o `"error"` (todas fallaron). El proceso en si sale con **codigo 0** aunque
+haya fallos individuales — la decision de que hacer con cada ruta fallida es
+de quien orquesta (n8n), leyendo `routes[].status`, no del codigo de salida
+del proceso completo (eso solo indica si el runner pudo ejecutarse).
+
+### Categorias de error (`error_category`)
+
+| Categoria | Cuando pasa |
+|---|---|
+| `programacion_invalida` | El vendedor o la ruta no estan en el catalogo oficial, o la ruta no le pertenece a ese vendedor. |
+| `configuracion_ruta_faltante` | La ruta no tiene entrada en `config/routes.json`. |
+| `carpeta_vendedor_faltante` / `carpeta_ruta_faltante` | No existe la carpeta esperada bajo `routes_root`. |
+| `archivo_base_faltante` | La carpeta existe pero no hay ningun archivo `[RUTA] <mes>.xlsx`. |
+| `archivo_base_ambiguo` | Hay mas de un candidato y no se puede decidir cual es el mas reciente con certeza. |
+| `fuente_datos_invalida` | Fallo al obtener la tabla de clientes (SAP/mock). |
+| `cliente_inexistente` | Un codigo de cliente de la ruta no existe en la tabla de clientes (VLOOKUP = `#N/A`). |
+| `formula_invalida` | Error de formula distinto de `#N/A` (`#REF!`, etc.). |
+| `validacion_fallida` | Cualquier otra validacion post-generacion que no pase. |
+| `archivo_destino_ya_existente` | Ya existe un archivo con ese nombre (no se sobreescribe). |
+| `error_escritura` | Error de sistema de archivos al guardar. |
+| `error_inesperado` | Cualquier otra cosa no prevista. |
+
+## 14. Idempotencia
+
+La fuente de verdad es `HistoryStore` (SQLite), **no** el estado que
+devuelva el `ScheduleSource`. Antes de tocar cualquier archivo, el runner
+busca si ya existe una ejecucion **exitosa** con la misma `natural_key`
+(`fecha_salida + vendedor + ruta`, normalizados). Si existe, la entrada se
+marca `skipped` y no se hace nada mas.
+
+Esto es deliberado: `LocalScheduleSource.mark_prepared()` SI actualiza el
+JSON local (asi una entrada ya preparada ni siquiera vuelve a aparecer como
+"due"), pero una futura fuente de solo lectura (InSitu, si no permite
+escribir de vuelta el estado) igual quedaria protegida por el historial. Se
+probaron ambos caminos explicitamente (ver `tests/test_runner.py`).
+
+Ademas, `generate_route` (Fase 1) nunca sobreescribe un archivo existente
+sin `force=True`, asi que aunque el historial se perdiera, un archivo ya
+generado nunca se pisa silenciosamente.
+
+## 15. Manejo de errores y validacion fallida
+
+Un fallo en una ruta se registra y se pasa a la siguiente; nunca detiene el
+lote completo (`tests/test_runner.py::test_one_route_fails_another_succeeds_in_same_batch`).
+Si la generacion produce un archivo pero la validacion posterior falla (por
+ejemplo, un cliente sin registro SAP → `#N/A`), el archivo invalido se
+**elimina** antes de terminar — nunca queda un archivo con apariencia de
+valido pero con datos incorrectos en la carpeta del vendedor.
+
+## 16. Como se conectara n8n
+
+El contrato es el CLI con `--json`: n8n no necesita saber nada de Python.
+
+**Nodo recomendado: Execute Command**, en un workflow disparado por un
+**Cron** (por ejemplo, todos los dias habiles a las 6am):
+
+```
+Cron (todos los dias, 06:00)
+  -> Execute Command:
+       command: cd "/ruta/al/proyecto/CXC BOT" && .venv/bin/python -m cxc_bot.cli process-due-routes --json
+  -> Function/Code node: JSON.parse(stdout)
+  -> IF: {{$json.failed > 0}}
+       true  -> (recorrer $json.routes filtrando status=="error") -> notificar (WhatsApp/correo/Slack)
+       false -> (opcional) notificar exito resumido
+```
+
+Notas practicas para quien configure el nodo:
+
+- El comando debe ejecutarse con el `cwd` del proyecto (las rutas de
+  config son relativas a el) y usando el interprete del `.venv` del
+  proyecto (`.venv/bin/python`), no el Python del sistema.
+- stdout contiene **solo** el JSON (los logs van a `logs/cxc_bot.log` y a
+  stderr) — se puede pasar `stdout` directo a un nodo `JSON.parse`.
+- El proceso sale con codigo 0 aunque algunas rutas hayan fallado
+  individualmente; n8n debe decidir por `$json.failed` / `$json.routes[].status`,
+  no por el exit code, para no tratar un `"partial"` como si el runner
+  hubiera reventado.
+- Cuando se quiera reemplazar `ConsoleNotifier`/`LogNotifier` por WhatsApp o
+  correo real, NO hace falta tocar `runner.py`: basta con que ese paso lo
+  haga el propio workflow de n8n leyendo `$json.routes` (mas simple), o
+  implementar `WebhookNotifier` en `notifier.py` para que el runner mismo
+  llame a un webhook de n8n (el contrato ya esta definido en ese archivo).
+
+## 17. No implementado todavia (a proposito)
+
+- Aplicacion de calendario propia (se uso un JSON simple en su lugar).
+- Integracion real con InSitu (`InsituScheduleSource` esta definida pero
+  lanza `NotImplementedError` a proposito).
+- SAP Business One Service Layer (`SapServiceLayerDataSource`, de Fase 1,
+  sigue sin implementarse).
+- Notificaciones reales (WhatsApp/correo) — el contrato (`Notifier`) esta
+  listo, falta solo conectar un canal real cuando haya credenciales.
+- Despliegue de n8n en si (esta fase deja el CLI listo para que n8n lo
+  invoque, no instala ni configura n8n).

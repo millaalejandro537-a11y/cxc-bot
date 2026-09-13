@@ -1,0 +1,72 @@
+[
+  {
+    "id": "2026-10-cortes",
+    "vendor": "Eric Brizuela",
+    "route": "Cortés",
+    "fecha_salida": "2026-10-13",
+    "fecha_regreso": "2026-10-15",
+    "observacion": null,
+    "estado": "preparada",
+    "aprobado": true
+  },
+  {
+    "id": "2026-10-lasvegas",
+    "vendor": "Eric Brizuela",
+    "route": "Las Vegas",
+    "fecha_salida": "2026-10-14",
+    "fecha_regreso": null,
+    "observacion": null,
+    "estado": "preparada",
+    "aprobado": true
+  },
+  {
+    "id": "2026-10-occidente",
+    "vendor": "José Carpio",
+    "route": "Occidente",
+    "fecha_salida": "2026-10-14",
+    "fecha_regreso": null,
+    "observacion": "Pendiente de configurar en config/routes.json",
+    "estado": "programada",
+    "aprobado": true
+  },
+  {
+    "id": "2026-10-olancho",
+    "vendor": "Darwin Milla",
+    "route": "Olancho",
+    "fecha_salida": "2026-10-15",
+    "fecha_regreso": null,
+    "observacion": null,
+    "estado": "programada",
+    "aprobado": true
+  },
+  {
+    "id": "2026-11-cortes-futura",
+    "vendor": "Eric Brizuela",
+    "route": "Cortés",
+    "fecha_salida": "2026-11-20",
+    "fecha_regreso": null,
+    "observacion": "Todavia no esta due (queda muy lejos)",
+    "estado": "programada",
+    "aprobado": true
+  },
+  {
+    "id": "2026-10-progreso-no-aprobada",
+    "vendor": "Eric Brizuela",
+    "route": "Progreso",
+    "fecha_salida": "2026-10-13",
+    "fecha_regreso": null,
+    "observacion": "Todavia sin aprobar, no debe generarse",
+    "estado": "programada",
+    "aprobado": false
+  },
+  {
+    "id": "2026-09-choloma-cancelada",
+    "vendor": "Eric Brizuela",
+    "route": "Choloma",
+    "fecha_salida": "2026-09-20",
+    "fecha_regreso": null,
+    "observacion": "Cancelada, no debe generarse",
+    "estado": "cancelada",
+    "aprobado": true
+  }
+]

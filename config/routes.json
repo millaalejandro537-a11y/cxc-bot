@@ -7,5 +7,23 @@
     "header_row": 7,
     "data_start_row": 8,
     "filename_prefix": "CORTES"
+  },
+  "LAS VEGAS": {
+    "vendor": "Eric Brizuela",
+    "main_sheet": "LASVEGAS",
+    "data_sheet": "Hoja2",
+    "fecha_cell": "B5",
+    "header_row": 7,
+    "data_start_row": 8,
+    "filename_prefix": "LASVEGAS"
+  },
+  "OLANCHO": {
+    "vendor": "Darwin Milla",
+    "main_sheet": "OLANCHO",
+    "data_sheet": "Hoja2",
+    "fecha_cell": "B5",
+    "header_row": 7,
+    "data_start_row": 8,
+    "filename_prefix": "OLANCHO"
   }
 }

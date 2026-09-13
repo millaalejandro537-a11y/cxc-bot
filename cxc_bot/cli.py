@@ -13,10 +13,23 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional
 
+from datetime import date, datetime
+
 from . import excel_service, validators
+from .business_calendar import (
+    DEFAULT_SCHEDULING_CONFIG_PATH,
+    load_business_calendar,
+    load_preparation_lead_days,
+    load_scheduling_settings,
+)
+from .catalog import CatalogError, VendorCatalog
 from .config import RouteNotFoundError, load_route_config
 from .data_source import LocalMockDataSource
+from .file_resolver import FileResolutionError
+from .history_store import DEFAULT_HISTORY_PATH, HistoryStore
 from .route_engine import AddClient, MoveClient, Operation, RemoveClient, ReorderAll, RouteEngineError
+from .runner import process_due_routes
+from .schedule_source import DEFAULT_SCHEDULE_PATH, LocalScheduleSource, ScheduleSourceError
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
@@ -28,7 +41,7 @@ def _setup_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(LOG_DIR / "cxc_bot.log", encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
+            logging.StreamHandler(sys.stderr),
         ],
     )
 
@@ -200,6 +213,73 @@ def _print_result(result, report, as_json: bool) -> None:
         print(f"  [error] {e}")
 
 
+def cmd_process_due_routes(args) -> int:
+    settings = load_scheduling_settings(Path(args.scheduling_config))
+    routes_root = Path(args.routes_root) if args.routes_root else Path(settings.get("routes_root", "."))
+    sap_data_path = args.data or settings.get("sap_mock_data_path")
+    if not sap_data_path:
+        raise SystemExit("No se especifico fuente de datos SAP (--data o 'sap_mock_data_path' en scheduling.json).")
+    lead_days = args.lead_days if args.lead_days is not None else load_preparation_lead_days(
+        Path(args.scheduling_config)
+    )
+    today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else date.today()
+
+    schedule_source = LocalScheduleSource(Path(args.schedule))
+    catalog = VendorCatalog.load()
+    calendar = load_business_calendar(Path(args.scheduling_config))
+    history = HistoryStore(Path(args.history_db))
+    sap_data_source = LocalMockDataSource(sap_data_path)
+
+    result = process_due_routes(
+        schedule_source=schedule_source,
+        catalog=catalog,
+        calendar=calendar,
+        lead_business_days=lead_days,
+        routes_root=routes_root,
+        sap_data_source=sap_data_source,
+        sap_source_label=str(sap_data_path),
+        history=history,
+        today=today,
+    )
+
+    payload = result.to_dict()
+    if args.json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"Corrida {payload['run_id']}: {payload['status']}")
+        print(f"  procesadas: {payload['processed']}  exitosas: {payload['succeeded']}  "
+              f"omitidas: {payload['skipped']}  fallidas: {payload['failed']}")
+        for r in payload["routes"]:
+            marker = {"success": "OK", "error": "ERROR", "skipped": "OMITIDA"}[r["status"]]
+            print(f"  [{marker}] {r['vendor']} / {r['route']} ({r['fecha_salida']})"
+                  + (f" -> {r['output_file']}" if r["output_file"] else "")
+                  + (f" :: {r['error_category']}: {r['error_message']}" if r["error_message"] and r["status"] == "error" else ""))
+
+    return 0
+
+
+def cmd_history(args) -> int:
+    history = HistoryStore(Path(args.history_db))
+    if args.route:
+        rows = history.find_by_route(args.route, vendor=args.vendor)
+    else:
+        rows = history.list_recent(limit=args.limit)
+
+    records = [dict(r) for r in rows]
+    if args.json_output:
+        print(json.dumps(records, ensure_ascii=False, indent=2, default=str))
+    else:
+        for r in records:
+            print(
+                f"{r['timestamp']} | {r['vendor']} / {r['route']} ({r['fecha_salida']}) "
+                f"| {r['estado']} | {r['archivo_generado'] or '-'} "
+                f"| clientes={r['cantidad_clientes']} | run={r['run_id']}"
+            )
+            if r["estado"] == "error":
+                print(f"    -> {r['error_categoria']}: {r['error_mensaje']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cxc-bot", description="Bot de Rutas CxC - Distribuciones Cosprobell")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Salida en formato JSON.")
@@ -229,6 +309,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ops_arguments(p_edit)
     p_edit.set_defaults(func=cmd_edit_route)
 
+    p_proc = sub.add_parser(
+        "process-due-routes",
+        help="Detecta que rutas deben prepararse ahora (segun la programacion) y las genera automaticamente.",
+    )
+    p_proc.add_argument("--json", dest="json_output", action="store_true", help="Salida en formato JSON.")
+    p_proc.add_argument("--schedule", default=str(DEFAULT_SCHEDULE_PATH), help="Archivo JSON de programacion de rutas.")
+    p_proc.add_argument(
+        "--scheduling-config", default=str(DEFAULT_SCHEDULING_CONFIG_PATH),
+        help="config/scheduling.json (dias habiles de anticipacion, calendario, rutas_root, datos SAP).",
+    )
+    p_proc.add_argument("--routes-root", help="Raiz de 'RUTA VENDEDORES/' (sobreescribe scheduling.json).")
+    p_proc.add_argument("--data", help="Archivo .xlsx/.csv que simula la extraccion SAP (sobreescribe scheduling.json).")
+    p_proc.add_argument("--lead-days", type=int, help="Dias habiles de anticipacion (sobreescribe scheduling.json).")
+    p_proc.add_argument("--today", help="Fecha 'de hoy' a usar, YYYY-MM-DD (por defecto: la fecha real). Util para pruebas.")
+    p_proc.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH), help="Base de datos SQLite del historial.")
+    p_proc.set_defaults(func=cmd_process_due_routes)
+
+    p_hist = sub.add_parser("history", help="Consulta el historial de ejecuciones (cuando se genero cada ruta).")
+    p_hist.add_argument("--json", dest="json_output", action="store_true", help="Salida en formato JSON.")
+    p_hist.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH), help="Base de datos SQLite del historial.")
+    p_hist.add_argument("--route", help="Filtrar por ruta (ej. Cortes).")
+    p_hist.add_argument("--vendor", help="Filtrar por vendedor (requiere --route).")
+    p_hist.add_argument("--limit", type=int, default=50, help="Maximo de filas a mostrar (sin --route).")
+    p_hist.set_defaults(func=cmd_history)
+
     return parser
 
 
@@ -248,6 +353,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except RouteEngineError as e:
         print(f"Operacion invalida, se aborto de forma segura: {e}", file=sys.stderr)
         return 4
+    except (ScheduleSourceError, CatalogError, FileResolutionError) as e:
+        print(f"Error de programacion/catalogo/archivos: {e}", file=sys.stderr)
+        return 5
     except Exception as e:  # noqa: BLE001 - CLI boundary: fallar de forma segura y clara
         print(f"Error inesperado: {e}", file=sys.stderr)
         return 1

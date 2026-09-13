@@ -1,0 +1,7 @@
+{
+  "dias_habiles_anticipacion": 3,
+  "dias_no_habiles_semana": [5, 6],
+  "feriados": [],
+  "routes_root": "./samples/RUTA VENDEDORES",
+  "sap_mock_data_path": "./samples/sap_mock_octubre.xlsx"
+}

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict
 
 from .models import RouteConfig
+from .text_utils import normalize_key
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "routes.json"
 
@@ -31,13 +32,13 @@ def load_all_routes(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, RouteC
     for route_id, fields in raw.items():
         fields = dict(fields)
         fields.setdefault("route_id", route_id)
-        routes[route_id] = RouteConfig(**fields)
+        routes[normalize_key(route_id)] = RouteConfig(**fields)
     return routes
 
 
 def load_route_config(route_id: str, config_path: Path = DEFAULT_CONFIG_PATH) -> RouteConfig:
     routes = load_all_routes(config_path)
-    key = route_id.upper()
+    key = normalize_key(route_id)
     if key not in routes:
         disponibles = ", ".join(sorted(routes.keys())) or "(ninguna)"
         raise RouteNotFoundError(
