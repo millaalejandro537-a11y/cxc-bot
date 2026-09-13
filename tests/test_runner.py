@@ -47,7 +47,7 @@ class FakeScheduleSource(ScheduleSource):
     # haria una fuente de solo lectura tipo InSitu.
 
 
-def make_entry(vendor="Eric Brizuela", route="Cortés", fecha_salida=date(2026, 10, 13),
+def make_entry(vendor="Erick Brizuela", route="Cortés", fecha_salida=date(2026, 10, 13),
                 estado="programada", aprobado=True, entry_id="e1"):
     return ScheduleEntry(id=entry_id, vendor=vendor, route=route, fecha_salida=fecha_salida,
                           estado=estado, aprobado=aprobado)
@@ -55,10 +55,10 @@ def make_entry(vendor="Eric Brizuela", route="Cortés", fecha_salida=date(2026, 
 
 @pytest.fixture
 def routes_root(tmp_path, base_file):
-    """<root>/Eric Brizuela/Cortes/CORTES septiembre.xlsx, listo para que el
+    """<root>/Erick Brizuela/Cortes/CORTES septiembre.xlsx, listo para que el
     runner genere CORTES octubre 2026.xlsx junto a el."""
     root = tmp_path / "RUTA VENDEDORES"
-    route_dir = root / "Eric Brizuela" / "Cortes"
+    route_dir = root / "Erick Brizuela" / "Cortes"
     route_dir.mkdir(parents=True)
     shutil.copy2(base_file, route_dir / "CORTES septiembre.xlsx")
     return root
@@ -121,13 +121,13 @@ def test_several_due_routes(tmp_path, base_file, sap_source, history, catalog, c
 
     root = tmp_path / "RUTA VENDEDORES"
 
-    d1 = root / "Eric Brizuela" / "Cortes"
+    d1 = root / "Erick Brizuela" / "Cortes"
     d1.mkdir(parents=True)
     shutil.copy2(base_file, d1 / "CORTES septiembre.xlsx")
 
     # Segunda ruta real (config "LAS VEGAS" en config/routes.json), para
     # probar 2 rutas DISTINTAS en el mismo lote, no la misma ruta dos veces.
-    d2 = root / "Eric Brizuela" / "Las Vegas"
+    d2 = root / "Erick Brizuela" / "Las Vegas"
     d2.mkdir(parents=True)
     lasvegas_path = d2 / "LASVEGAS septiembre.xlsx"
     shutil.copy2(base_file, lasvegas_path)
@@ -136,8 +136,8 @@ def test_several_due_routes(tmp_path, base_file, sap_source, history, catalog, c
     wb.save(lasvegas_path)
 
     entries = [
-        make_entry(entry_id="e1", vendor="Eric Brizuela", route="Cortés", fecha_salida=date(2026, 10, 13)),
-        make_entry(entry_id="e2", vendor="Eric Brizuela", route="Las Vegas", fecha_salida=date(2026, 10, 14)),
+        make_entry(entry_id="e1", vendor="Erick Brizuela", route="Cortés", fecha_salida=date(2026, 10, 13)),
+        make_entry(entry_id="e2", vendor="Erick Brizuela", route="Las Vegas", fecha_salida=date(2026, 10, 14)),
     ]
     result = run(entries, root, sap_source, history, catalog, calendar, today=date(2026, 10, 9))
     assert result.processed == 2
@@ -174,14 +174,14 @@ def test_duplicate_run_is_idempotent_via_history(routes_root, sap_source, histor
     assert r2.skipped == 1
     assert r2.succeeded == 0
 
-    generated = list((routes_root / "Eric Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
+    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
     assert len(generated) == 1  # nunca se duplico el archivo
 
 
 # 6. archivo base faltante
 def test_missing_base_file(tmp_path, sap_source, history, catalog, calendar):
     root = tmp_path / "RUTA VENDEDORES"
-    (root / "Eric Brizuela" / "Cortes").mkdir(parents=True)  # carpeta existe, sin archivos
+    (root / "Erick Brizuela" / "Cortes").mkdir(parents=True)  # carpeta existe, sin archivos
     entries = [make_entry()]
     result = run(entries, root, sap_source, history, catalog, calendar, today=date(2026, 10, 8))
     assert result.failed == 1
@@ -197,7 +197,7 @@ def test_ambiguous_base_files(tmp_path, base_file, sap_source, history, catalog,
     import os
 
     root = tmp_path / "RUTA VENDEDORES"
-    route_dir = root / "Eric Brizuela" / "Cortes"
+    route_dir = root / "Erick Brizuela" / "Cortes"
     route_dir.mkdir(parents=True)
     shutil.copy2(base_file, route_dir / "CORTES septiembre.xlsx")
     shutil.copy2(base_file, route_dir / "CORTES  septiembre.xlsx")  # doble espacio: mismo mes, otro archivo
@@ -230,7 +230,7 @@ def test_validation_failure_rolls_back_output_file(routes_root, history, catalog
     assert result.failed == 1
     assert result.routes[0].error_category == "cliente_inexistente"
 
-    generated = list((routes_root / "Eric Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
+    generated = list((routes_root / "Erick Brizuela" / "Cortes").glob("CORTES octubre*.xlsx"))
     assert generated == []  # no debe quedar un archivo invalido tirado
 
 
@@ -245,13 +245,13 @@ def test_invalid_vendor_route_combination(routes_root, sap_source, history, cata
 # 11. una ruta falla pero otra puede completarse
 def test_one_route_fails_another_succeeds_in_same_batch(tmp_path, base_file, sap_source, history, catalog, calendar):
     root = tmp_path / "RUTA VENDEDORES"
-    good_dir = root / "Eric Brizuela" / "Cortes"
+    good_dir = root / "Erick Brizuela" / "Cortes"
     good_dir.mkdir(parents=True)
     shutil.copy2(base_file, good_dir / "CORTES septiembre.xlsx")
     # segunda entrada: carpeta de vendedor que ni siquiera existe
     entries = [
-        make_entry(entry_id="ok", vendor="Eric Brizuela", route="Cortés"),
-        make_entry(entry_id="bad", vendor="Darwin Milla", route="Olancho"),
+        make_entry(entry_id="ok", vendor="Erick Brizuela", route="Cortés"),
+        make_entry(entry_id="bad", vendor="Darwing Milla", route="Olancho"),
     ]
     result = run(entries, root, sap_source, history, catalog, calendar, today=date(2026, 10, 8))
     assert result.succeeded == 1
@@ -266,7 +266,7 @@ def test_history_is_recorded_correctly(routes_root, sap_source, history, catalog
     entries = [make_entry()]
     run(entries, routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 8))
 
-    rows = history.find_by_route("Cortés", vendor="Eric Brizuela")
+    rows = history.find_by_route("Cortés", vendor="Erick Brizuela")
     assert len(rows) == 1
     row = rows[0]
     assert row["estado"] == "exito"
@@ -280,15 +280,15 @@ def test_history_is_recorded_correctly(routes_root, sap_source, history, catalog
 def test_schedule_state_only_changes_after_success(tmp_path, base_file, sap_source, history, catalog, calendar):
     schedule_path = tmp_path / "schedule.json"
     schedule_path.write_text(json.dumps([
-        {"id": "ok", "vendor": "Eric Brizuela", "route": "Cortés", "fecha_salida": "2026-10-13",
+        {"id": "ok", "vendor": "Erick Brizuela", "route": "Cortés", "fecha_salida": "2026-10-13",
          "estado": "programada", "aprobado": True},
-        {"id": "bad", "vendor": "Darwin Milla", "route": "Olancho", "fecha_salida": "2026-10-13",
+        {"id": "bad", "vendor": "Darwing Milla", "route": "Olancho", "fecha_salida": "2026-10-13",
          "estado": "programada", "aprobado": True},
     ]), encoding="utf-8")
     real_source = LocalScheduleSource(schedule_path)
 
     root = tmp_path / "RUTA VENDEDORES"
-    good_dir = root / "Eric Brizuela" / "Cortes"
+    good_dir = root / "Erick Brizuela" / "Cortes"
     good_dir.mkdir(parents=True)
     shutil.copy2(base_file, good_dir / "CORTES septiembre.xlsx")
     # Olancho: carpeta de vendedor no existe -> fallara

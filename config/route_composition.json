@@ -1,0 +1,11 @@
+{
+  "COMAYAGUA": {
+    "vendor": "José Carpio",
+    "template_route_id": "COMAYAGUA",
+    "vigente_desde": null,
+    "components": [
+      {"name": "Comayagua", "route_id": "COMAYAGUA", "folder_name": "Comayagua", "order": 1},
+      {"name": "Santa Cruz de Yojoa", "route_id": "STA_CRUZ", "folder_name": "Santa Cruz de Yojoa", "order": 2}
+    ]
+  }
+}

@@ -126,6 +126,7 @@ def _all_columns(config: RouteConfig) -> List[str]:
     cols = {getattr(config, name) for name in MAIN_COLUMNS}
     cols.add(config.total_label_col)
     cols.add(config.total_value_col)
+    cols.update(config.passthrough_cols)
     return sorted(cols)
 
 
@@ -215,6 +216,8 @@ def _rebuild_client_block(
         ws[f"{config.factura_col}{row}"] = entry.no_factura
         ws[f"{config.saldo_col}{row}"] = config.saldo_formula_for(row)
         ws[f"{config.obs_col}{row}"] = "" if clear_observaciones else (entry.observacion or "")
+        for extra_col in config.passthrough_cols:
+            ws[f"{extra_col}{row}"] = None  # sin fuente real; se deja en blanco, igual que Observacion
         data_row_template.apply(ws, row)
 
     total_row_template.apply(ws, new_total_row)
@@ -270,14 +273,25 @@ def replace_sap_table(ws: Worksheet, records: List[SapClientRecord], config: Rou
 NA_ERROR = "#N/A"
 
 
+def _lookup_key(codigo) -> str:
+    """VLOOKUP en Excel compara texto SIN distinguir mayusculas/minusculas
+    ('c11073' encuentra 'C11073'). Se normaliza aqui para que la
+    replica en Python se comporte igual, en vez de fallar con #N/A
+    por una diferencia de capitalizacion que Excel si resuelve."""
+
+    return str(codigo).strip().upper()
+
+
 def build_sap_lookup_map(sap_records: List[SapClientRecord]) -> Dict[str, Tuple[str, float]]:
-    """Replica VLOOKUP(..., 0): coincidencia exacta, gana la PRIMERA aparicion
-    del codigo (igual que Excel al buscar de arriba hacia abajo)."""
+    """Replica VLOOKUP(..., 0): coincidencia exacta (sin distinguir
+    mayusculas/minusculas, igual que Excel), gana la PRIMERA aparicion del
+    codigo (igual que Excel al buscar de arriba hacia abajo)."""
 
     lookup: Dict[str, Tuple[str, float]] = {}
     for rec in sap_records:
-        if rec.codigo not in lookup:
-            lookup[rec.codigo] = (rec.nombre, rec.saldo)
+        key = _lookup_key(rec.codigo)
+        if key not in lookup:
+            lookup[key] = (rec.nombre, rec.saldo)
     return lookup
 
 
@@ -296,11 +310,11 @@ def sap_lookup_map_from_sheet(ws_sap: Worksheet, config: RouteConfig) -> Dict[st
         codigo = ws_sap.cell(row=row, column=code_idx).value
         if codigo is None:
             continue
-        codigo = str(codigo).strip()
-        if codigo not in lookup:
+        key = _lookup_key(codigo)
+        if key not in lookup:
             nombre = ws_sap.cell(row=row, column=name_idx).value
             saldo = ws_sap.cell(row=row, column=saldo_idx).value
-            lookup[codigo] = (nombre or "", saldo if isinstance(saldo, (int, float)) else 0.0)
+            lookup[key] = (nombre or "", saldo if isinstance(saldo, (int, float)) else 0.0)
     return lookup
 
 
@@ -322,7 +336,7 @@ def compute_cached_values(
         row = config.data_start_row + i
         name_ref = f"{config.name_col}{row}"
         saldo_ref = f"{config.saldo_col}{row}"
-        match = sap_lookup.get(entry.codigo)
+        match = sap_lookup.get(_lookup_key(entry.codigo))
         if match is None:
             cells[name_ref] = ("e", NA_ERROR)
             cells[saldo_ref] = ("e", NA_ERROR)
@@ -431,7 +445,7 @@ def inject_cached_formula_values(
     logger.info("Valores calculados inyectados en '%s': %d celdas.", sheet_name, len(cell_values))
 
 
-def _peek_roster(path: Path, config: RouteConfig) -> List[ClientEntry]:
+def peek_roster(path: Path, config: RouteConfig) -> List[ClientEntry]:
     """Lee el roster de un archivo SIN escribirlo nunca (ni siquiera .save()).
     Se usa para validar operaciones antes de crear cualquier archivo de salida,
     para poder abortar de forma segura sin dejar artefactos a medio generar."""
@@ -466,8 +480,17 @@ def generate_route(
     sap_records: List[SapClientRecord],
     operations: Optional[List[Operation]] = None,
     force: bool = False,
+    override_roster: Optional[List[ClientEntry]] = None,
 ) -> GenerationResult:
-    """Genera el Excel de un nuevo mes a partir del archivo base del mes anterior."""
+    """Genera el Excel de un nuevo mes a partir del archivo base del mes anterior.
+
+    `override_roster`, si se da, REEMPLAZA por completo el roster que se
+    leeria del archivo base (y se ignoran `operations`): lo usa
+    composite_route_service.py para rutas compuestas, donde el roster viene
+    de concatenar varios archivos componente en vez de leerse del propio
+    archivo base. `base_path` se sigue usando como plantilla estructural
+    (estilos/formato) tal cual.
+    """
 
     base_path = Path(base_path)
     output_path = Path(output_path)
@@ -476,8 +499,11 @@ def generate_route(
     # Validar TODO (roster + operaciones) contra el archivo base antes de crear
     # ningun archivo de salida: si una operacion es invalida, se aborta aqui
     # sin dejar artefactos a medio generar.
-    old_roster_preview = _peek_roster(base_path, route_config)
-    new_roster = apply_operations(old_roster_preview, operations) if operations else list(old_roster_preview)
+    if override_roster is not None:
+        new_roster = list(override_roster)
+    else:
+        old_roster_preview = peek_roster(base_path, route_config)
+        new_roster = apply_operations(old_roster_preview, operations) if operations else list(old_roster_preview)
     validate_roster(new_roster)
 
     copy_base_file(base_path, output_path, force=force)
@@ -553,7 +579,7 @@ def edit_route(
         )
 
     # Igual que en generate_route: validar antes de crear cualquier archivo.
-    old_roster_preview = _peek_roster(input_path, route_config)
+    old_roster_preview = peek_roster(input_path, route_config)
     new_roster = apply_operations(old_roster_preview, operations)
 
     copy_base_file(input_path, output_path, force=force)

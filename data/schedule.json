@@ -1,7 +1,7 @@
 [
   {
     "id": "2026-10-cortes",
-    "vendor": "Eric Brizuela",
+    "vendor": "Erick Brizuela",
     "route": "Cortés",
     "fecha_salida": "2026-10-13",
     "fecha_regreso": "2026-10-15",
@@ -11,7 +11,7 @@
   },
   {
     "id": "2026-10-lasvegas",
-    "vendor": "Eric Brizuela",
+    "vendor": "Erick Brizuela",
     "route": "Las Vegas",
     "fecha_salida": "2026-10-14",
     "fecha_regreso": null,
@@ -31,7 +31,7 @@
   },
   {
     "id": "2026-10-olancho",
-    "vendor": "Darwin Milla",
+    "vendor": "Darwing Milla",
     "route": "Olancho",
     "fecha_salida": "2026-10-15",
     "fecha_regreso": null,
@@ -41,7 +41,7 @@
   },
   {
     "id": "2026-11-cortes-futura",
-    "vendor": "Eric Brizuela",
+    "vendor": "Erick Brizuela",
     "route": "Cortés",
     "fecha_salida": "2026-11-20",
     "fecha_regreso": null,
@@ -51,7 +51,7 @@
   },
   {
     "id": "2026-10-progreso-no-aprobada",
-    "vendor": "Eric Brizuela",
+    "vendor": "Erick Brizuela",
     "route": "Progreso",
     "fecha_salida": "2026-10-13",
     "fecha_regreso": null,
@@ -61,7 +61,7 @@
   },
   {
     "id": "2026-09-choloma-cancelada",
-    "vendor": "Eric Brizuela",
+    "vendor": "Erick Brizuela",
     "route": "Choloma",
     "fecha_salida": "2026-09-20",
     "fecha_regreso": null,

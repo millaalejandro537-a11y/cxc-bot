@@ -177,9 +177,9 @@ def validate_workbook(
     for row in range(2, ws_sap.max_row + 1):
         v = ws_sap.cell(row=row, column=1).value
         if v is not None:
-            sap_codes.add(str(v).strip())
+            sap_codes.add(str(v).strip().upper())  # VLOOKUP no distingue mayusculas/minusculas
 
-    missing_in_sap = [c for c in codes if c not in sap_codes]
+    missing_in_sap = [c for c in codes if c.upper() not in sap_codes]
     if missing_in_sap:
         warnings.append(
             f"Estos codigos de la ruta no existen en Hoja2 (el VLOOKUP dara #N/A): {missing_in_sap}"

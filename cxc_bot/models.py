@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -21,14 +21,24 @@ class SapClientRecord:
 
 @dataclass
 class ClientEntry:
-    """Un cliente dentro de la lista/ruta de un vendedor (hoja principal)."""
+    """Un cliente dentro de la lista/ruta de un vendedor (hoja principal).
+
+    `componente` identifica de que zona/archivo original viene este cliente
+    cuando la ruta es compuesta (p.ej. "Santa Cruz de Yojoa" dentro de la
+    ruta operativa "Comayagua"). None para rutas simples. No se escribe en
+    el Excel -- vive solo en configuracion/snapshots (ver section 9 del
+    encargo de rutas compuestas)."""
 
     codigo: str
     no_factura: Optional[str] = None
     observacion: Optional[str] = None
+    componente: Optional[str] = None
 
     def clone(self) -> "ClientEntry":
-        return ClientEntry(codigo=self.codigo, no_factura=self.no_factura, observacion=self.observacion)
+        return ClientEntry(
+            codigo=self.codigo, no_factura=self.no_factura,
+            observacion=self.observacion, componente=self.componente,
+        )
 
 
 @dataclass
@@ -61,6 +71,13 @@ class RouteConfig:
     saldo_formula: str = "=VLOOKUP({code_ref},{data_sheet}!A:C,3,0)"
     total_formula: str = "=SUM({first_ref}:{last_ref})"
     filename_prefix: str = "CORTES"
+    # Columnas adicionales que algunas rutas reales traen (p.ej. "ESTADO" en
+    # Comayagua/Occidente/Santa Cruz/Villanueva/Yoro/Santa Barbara, entre
+    # nombre y factura) para las que no hay fuente de datos real todavia. El
+    # motor les preserva el estilo/alto en cada fila (igual que a las demas
+    # columnas) pero las deja en blanco en cada mes nuevo, igual que
+    # Observacion -- no se inventa contenido para una columna sin fuente.
+    passthrough_cols: List[str] = field(default_factory=list)
 
     def name_formula_for(self, row: int) -> str:
         code_ref = f"{self.code_col}{row}"
