@@ -56,7 +56,7 @@ def make_entry(vendor="Eric Brizuela", route="Cortés", fecha_salida=date(2026, 
 @pytest.fixture
 def routes_root(tmp_path, base_file):
     """<root>/Eric Brizuela/Cortes/CORTES septiembre.xlsx, listo para que el
-    runner genere CORTES octubre.xlsx junto a el."""
+    runner genere CORTES octubre 2026.xlsx junto a el."""
     root = tmp_path / "RUTA VENDEDORES"
     route_dir = root / "Eric Brizuela" / "Cortes"
     route_dir.mkdir(parents=True)
@@ -112,7 +112,7 @@ def test_one_due_route_succeeds(routes_root, sap_source, history, catalog, calen
     result = run(entries, routes_root, sap_source, history, catalog, calendar, today=date(2026, 10, 8))
     assert result.processed == 1
     assert result.succeeded == 1
-    assert result.routes[0].output_file.endswith("CORTES octubre.xlsx")
+    assert result.routes[0].output_file.endswith("CORTES octubre 2026.xlsx")
 
 
 # 3. varias rutas pendientes
@@ -271,7 +271,7 @@ def test_history_is_recorded_correctly(routes_root, sap_source, history, catalog
     row = rows[0]
     assert row["estado"] == "exito"
     assert row["cantidad_clientes"] == 32
-    assert row["archivo_generado"].endswith("CORTES octubre.xlsx")
+    assert row["archivo_generado"].endswith("CORTES octubre 2026.xlsx")
     assert row["fuente_datos"] == "fake"
     assert row["duracion_ms"] is not None
 

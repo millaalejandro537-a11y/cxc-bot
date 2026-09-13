@@ -221,3 +221,117 @@ def test_ambiguous_vendor_folder_names_raise_error(tmp_path, config):
 
     with pytest.raises(FileResolutionError):
         resolve(tmp_path, config)
+
+
+# ---------------------------------------------------------------------------
+# Año explicito en el nombre: "[RUTA] [mes] [año].xlsx"
+# ---------------------------------------------------------------------------
+def test_old_file_without_year_still_works(tmp_path, config):
+    """Compatibilidad hacia atras: el formato historico sin año sigue
+    resolviendo por inferencia, como siempre."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES septiembre.xlsx", mtime=1000)
+
+    result = resolve(tmp_path, config)
+    assert result.name == "CORTES septiembre.xlsx"
+
+
+def test_new_file_with_explicit_year_is_recognized(tmp_path, config):
+    """Formato preferido para archivos nuevos: '[RUTA] [mes] [año].xlsx'."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES octubre 2026.xlsx", mtime=1000)
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 11, 10))
+    assert result.name == "CORTES octubre 2026.xlsx"
+
+
+def test_same_month_different_explicit_years_picks_the_later_year(tmp_path, config):
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES septiembre 2025.xlsx", mtime=5000)  # mtime mas nuevo...
+    _touch(route_dir / "CORTES septiembre 2026.xlsx", mtime=1000)  # ...pero año mas nuevo por nombre
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 10, 13))
+    assert result.name == "CORTES septiembre 2026.xlsx"
+
+
+def test_december_to_january_year_rollover_with_explicit_years(tmp_path, config):
+    """Cambio de diciembre a enero: enero 2027 es mas reciente que
+    diciembre 2026 aunque el numero de mes sea menor."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES diciembre 2026.xlsx", mtime=1000)
+    _touch(route_dir / "CORTES enero 2027.xlsx", mtime=1000)
+
+    result = resolve(tmp_path, config, reference_date=date(2027, 1, 15))
+    assert result.name == "CORTES enero 2027.xlsx"
+
+
+@pytest.mark.parametrize("bad_name", [
+    "CORTES septiembre 999.xlsx",     # solo 3 digitos
+    "CORTES septiembre 20266.xlsx",   # 5 digitos
+    "CORTES septiembre 1899.xlsx",    # fuera de rango razonable
+    "CORTES septiembre abcd.xlsx",    # no numerico
+    "CORTES septiembre 20 26.xlsx",   # roto en tres tokens
+])
+def test_invalid_explicit_year_is_ignored_not_guessed(tmp_path, config, bad_name):
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / bad_name, mtime=1000)
+
+    with pytest.raises(NoBaseFileFoundError):
+        resolve(tmp_path, config)
+
+
+def test_invalid_explicit_year_ignored_while_valid_file_is_still_picked(tmp_path, config):
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES septiembre 20266.xlsx", mtime=9999999)  # invalido, se ignora
+    _touch(route_dir / "CORTES agosto 2026.xlsx", mtime=1)
+
+    result = resolve(tmp_path, config)
+    assert result.name == "CORTES agosto 2026.xlsx"
+
+
+def test_old_format_and_new_format_coexist_explicit_year_wins(tmp_path, config):
+    """Coexistencia de 'septiembre.xlsx' (formato historico, año inferido)
+    y 'septiembre 2026.xlsx' (formato nuevo, año explicito) para el MISMO
+    mes/año: el año explicito prevalece, sin importar mtime."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    # El archivo SIN año tiene mtime mucho mas reciente -- no debe importar.
+    _touch(route_dir / "CORTES septiembre.xlsx", mtime=9_000_000_000)
+    _touch(route_dir / "CORTES septiembre 2026.xlsx", mtime=1)
+
+    result = resolve(tmp_path, config, reference_date=date(2026, 10, 13))
+    assert result.name == "CORTES septiembre 2026.xlsx"
+
+
+def test_explicit_year_prevails_over_inference_and_mtime_even_when_inference_would_differ(tmp_path, config):
+    """Ademas de mtime, el año explicito tambien le gana a la INFERENCIA aunque
+    la inferencia normalmente hubiera apuntado a otro año."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    # Con reference_date en 2027, "septiembre.xlsx" (sin año) se infiere como
+    # septiembre 2026 (la ultima ocurrencia antes de la fecha de referencia).
+    # "septiembre 2026.xlsx" declara el mismo año explicitamente: deben
+    # coincidir en el mismo grupo y el explicito debe ganar igual.
+    _touch(route_dir / "CORTES septiembre.xlsx", mtime=9_000_000_000)
+    _touch(route_dir / "CORTES septiembre 2026.xlsx", mtime=1)
+
+    result = resolve(tmp_path, config, reference_date=date(2027, 3, 1))
+    assert result.name == "CORTES septiembre 2026.xlsx"
+
+
+def test_two_explicit_years_same_month_ambiguous_mtime_aborts(tmp_path, config):
+    """Cuando AMBOS candidatos tienen año explicito e identico mes/año, el
+    desempate sigue siendo por mtime -- y si esta tambien empatado, se aborta."""
+    route_dir = tmp_path / "Eric Brizuela" / "Cortes"
+    route_dir.mkdir(parents=True)
+    _touch(route_dir / "CORTES septiembre 2026.xlsx", mtime=1000.0)
+    _touch(route_dir / "CORTES  septiembre 2026.xlsx", mtime=1000.5)  # doble espacio: otro archivo
+
+    with pytest.raises(AmbiguousBaseFileError):
+        resolve(tmp_path, config)
