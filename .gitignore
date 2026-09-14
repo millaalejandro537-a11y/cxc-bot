@@ -6,5 +6,8 @@ logs/*.log
 output/*.xlsx
 tests/fixtures/*.xlsx
 data/history.sqlite3
+data/business_snapshots.sqlite3
+data/config_versions.sqlite3
 data/*.tmp
 samples/RUTA VENDEDORES/**/*octubre*.xlsx
+n8n/.env
