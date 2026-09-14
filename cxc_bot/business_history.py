@@ -109,11 +109,11 @@ class BusinessHistoryStore:
     def __init__(self, db_path: Path = DEFAULT_BUSINESS_DB_PATH):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             conn.executescript(SCHEMA)
             conn.commit()
 
-    def _connect(self) -> sqlite3.Connection:
+    def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -137,7 +137,7 @@ class BusinessHistoryStore:
         fuente_datos_es_mock: bool = True,
         fecha_generacion: Optional[date] = None,
     ) -> CreateSnapshotResult:
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             try:
                 result = self._insert_snapshot(
                     conn,
@@ -232,7 +232,7 @@ class BusinessHistoryStore:
         reemplazar una salida completa (crear la version nueva Y marcar la
         vieja) usa replace_snapshot(), que resuelve el orden correcto."""
 
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             conn.execute(
                 "UPDATE snapshots SET estado = 'sustituido', sustituido_por = ? "
                 "WHERE snapshot_id = ? AND estado = 'vigente'",
@@ -254,7 +254,7 @@ class BusinessHistoryStore:
         if old_row is None or old_row["estado"] != "vigente":
             raise BusinessHistoryError(f"'{old_snapshot_id}' no existe o no esta vigente; no hay nada que reemplazar.")
 
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             try:
                 conn.execute(
                     "UPDATE snapshots SET estado = 'sustituido' WHERE snapshot_id = ? AND estado = 'vigente'",
@@ -274,7 +274,7 @@ class BusinessHistoryStore:
         return new_result
 
     def cancel_snapshot(self, snapshot_id: str, motivo: str) -> None:
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             conn.execute(
                 "UPDATE snapshots SET estado = 'cancelado', cancelado_motivo = ? "
                 "WHERE snapshot_id = ? AND estado = 'vigente'",
@@ -283,17 +283,17 @@ class BusinessHistoryStore:
             conn.commit()
 
     def get_snapshot(self, snapshot_id: str) -> Optional[sqlite3.Row]:
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             return conn.execute("SELECT * FROM snapshots WHERE snapshot_id = ?", (snapshot_id,)).fetchone()
 
     def get_snapshot_clients(self, snapshot_id: str) -> List[sqlite3.Row]:
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             return conn.execute(
                 "SELECT * FROM snapshot_clients WHERE snapshot_id = ? ORDER BY posicion", (snapshot_id,)
             ).fetchall()
 
     def find_vigente(self, vendor: str, route: str, fecha_salida: date) -> Optional[sqlite3.Row]:
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             return conn.execute(
                 "SELECT * FROM snapshots WHERE vendor = ? AND route = ? AND fecha_salida = ? AND estado = 'vigente'",
                 (vendor, route, fecha_salida.isoformat()),
@@ -308,7 +308,7 @@ class BusinessHistoryStore:
         if only_vigente:
             query += " AND estado = 'vigente'"
         query += " ORDER BY fecha_salida"
-        with closing(self._connect()) as conn:
+        with closing(self.connect()) as conn:
             return conn.execute(query, params).fetchall()
 
 
