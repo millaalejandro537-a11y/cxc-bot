@@ -26,7 +26,7 @@
     "fecha_salida": "2026-10-14",
     "fecha_regreso": null,
     "observacion": "Pendiente de configurar en config/routes.json",
-    "estado": "programada",
+    "estado": "preparada",
     "aprobado": true
   },
   {

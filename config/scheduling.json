@@ -4,5 +4,6 @@
   "feriados": [],
   "timezone": "America/Tegucigalpa",
   "routes_root": "./samples/RUTA VENDEDORES",
-  "sap_mock_data_path": "./samples/sap_mock_octubre.xlsx"
+  "sap_mock_data_path": "./samples/sap_mock_octubre.xlsx",
+  "catchup_window_dias": 14
 }

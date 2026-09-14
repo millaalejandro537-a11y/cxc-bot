@@ -23,8 +23,10 @@ from .business_calendar import (
     load_scheduling_settings,
     today_in_timezone,
 )
+from .business_history import DEFAULT_BUSINESS_DB_PATH, BusinessHistoryStore
 from .catalog import CatalogError, VendorCatalog
 from .config import RouteNotFoundError, load_route_config
+from .config_versioning import DEFAULT_CONFIG_VERSIONS_DB_PATH, ConfigVersionStore
 from .data_source import LocalMockDataSource
 from .file_resolver import FileResolutionError
 from .history_store import DEFAULT_HISTORY_PATH, HistoryStore
@@ -228,6 +230,15 @@ def cmd_process_due_routes(args) -> int:
     catalog = VendorCatalog.load()
     calendar = load_business_calendar(Path(args.scheduling_config))
     history = HistoryStore(Path(args.history_db))
+    catchup_window_days = args.catchup_window_days if args.catchup_window_days is not None else settings.get(
+        "catchup_window_dias"
+    )
+
+    business_history = None
+    config_versions = None
+    if not args.no_snapshot:
+        business_history = BusinessHistoryStore(Path(args.business_db))
+        config_versions = ConfigVersionStore(db_path=Path(args.config_versions_db))
 
     # "Hoy" en la zona horaria del negocio (America/Tegucigalpa por defecto),
     # no la de la maquina/servidor donde corra esto -- salvo que se pase
@@ -245,6 +256,11 @@ def cmd_process_due_routes(args) -> int:
         sap_source_label=str(sap_data_path),
         history=history,
         today=today,
+        business_history=business_history,
+        config_versions=config_versions,
+        environment=args.environment,
+        sap_is_mock=True,  # LocalMockDataSource SIEMPRE es mock: el candado prod+mock aplica siempre aqui
+        catchup_window_days=catchup_window_days,
     )
 
     payload = result.to_dict()
@@ -328,7 +344,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_proc.add_argument("--data", help="Archivo .xlsx/.csv que simula la extraccion SAP (sobreescribe scheduling.json).")
     p_proc.add_argument("--lead-days", type=int, help="Dias habiles de anticipacion (sobreescribe scheduling.json).")
     p_proc.add_argument("--today", help="Fecha 'de hoy' a usar, YYYY-MM-DD (por defecto: la fecha real). Util para pruebas.")
-    p_proc.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH), help="Base de datos SQLite del historial.")
+    p_proc.add_argument("--history-db", default=str(DEFAULT_HISTORY_PATH), help="Base de datos SQLite del historial tecnico.")
+    p_proc.add_argument(
+        "--environment", choices=["dev", "test", "prod"], default="dev",
+        help="Ambiente logico de esta corrida (default: dev). Un snapshot 'prod' con datos mock se degrada "
+             "automaticamente a 'dev' -- ver DEV/TEST/PROD en el manual.",
+    )
+    p_proc.add_argument(
+        "--business-db", default=str(DEFAULT_BUSINESS_DB_PATH), help="Base de datos SQLite de snapshots de negocio."
+    )
+    p_proc.add_argument(
+        "--config-versions-db", default=str(DEFAULT_CONFIG_VERSIONS_DB_PATH),
+        help="Base de datos SQLite de versiones de configuracion.",
+    )
+    p_proc.add_argument(
+        "--no-snapshot", action="store_true", help="No crear snapshot de negocio para esta corrida."
+    )
+    p_proc.add_argument(
+        "--catchup-window-days", type=int,
+        help="Maximo de dias de atraso a procesar automaticamente (sobreescribe scheduling.json; sin limite si no se da).",
+    )
     p_proc.set_defaults(func=cmd_process_due_routes)
 
     p_hist = sub.add_parser("history", help="Consulta el historial de ejecuciones (cuando se genero cada ruta).")
