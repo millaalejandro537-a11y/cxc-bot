@@ -1,5 +1,11 @@
 # HANDOFF — Bot de Rutas CxC (Distribuciones Cosprobell)
 
+> **Actualización 2026-10-03:** preparación SAP (sin conexión real) completada:
+> `cxc_bot/sap_service_layer.py` + `sap_fakes.py`, `SapDataSource.is_mock`
+> (el runner deriva el candado prod+mock de la fuente), 230 tests. Lo único
+> pendiente de SAP está en `docs/SAP-INTEGRATION-TODO.md`. El resto de este
+> documento describe el estado al 2026-09-13 y sigue vigente salvo el conteo de tests.
+
 Checkpoint de cierre de sesión. Refleja el estado REAL del repositorio al
 momento de escribirse (verificado con `git status`, `git log` y la suite de
 pruebas, no solo la conversación).

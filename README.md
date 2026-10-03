@@ -233,13 +233,16 @@ Un resultado con errores lanza `ValidationError` y detiene la corrida.
 
 ## 8. Sustitucion futura por SAP Service Layer
 
-`data_source.py` define la interfaz `SapDataSource` con un unico metodo,
-`fetch_clients()`. `LocalMockDataSource` la implementa leyendo un archivo
-local. El dia que se conecte el Service Layer real, basta con implementar
-`SapServiceLayerDataSource.fetch_clients()` (autenticarse, consultar
-`BusinessPartners` filtrando `CardCode` que empiece con `C`, y devolver la
-misma lista de `SapClientRecord`). **Ni `route_engine.py` ni
-`excel_service.py` necesitan cambiar.**
+`data_source.py` define la interfaz `SapDataSource` (`fetch_clients()` y la
+propiedad `is_mock`). `LocalMockDataSource` la implementa leyendo un archivo
+local. `sap_service_layer.py` ya contiene `SapServiceLayerDataSource`
+(filtro OData de clientes, paginacion, mapeo estricto, validacion de calidad,
+re-login de sesion, errores tipados), que habla con SAP solo a traves de un
+`ServiceLayerTransport` minimo (login/get/logout). Hoy esta probado contra
+`FakeServiceLayerTransport` (`sap_fakes.py`, datos sinteticos). Lo unico que
+falta es el transport HTTP real y confirmar el mapeo de 3 campos: ver
+`docs/SAP-INTEGRATION-TODO.md`. **Ni `route_engine.py`, ni `excel_service.py`,
+ni el runner necesitan cambiar.**
 
 ## 9. Como podra llamarlo n8n
 

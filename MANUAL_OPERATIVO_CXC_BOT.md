@@ -190,11 +190,14 @@ cp /ruta/de/respaldo/*.sqlite3 data/
 
 ## 15. Cómo retomar SAP
 
-1. Implementar `SapServiceLayerDataSource` en `cxc_bot/data_source.py`
-   (método `fetch_clients()`, misma forma que `LocalMockDataSource`).
-2. Marcar `fuente_datos_es_mock=False` al llamar al runner con esa fuente
-   — esto es lo que permite que los snapshots empiecen a marcarse como
-   `prod` de verdad.
+La fuente `SapServiceLayerDataSource` (`cxc_bot/sap_service_layer.py`) ya
+existe y está probada con un transport falso. Falta solo el transport HTTP
+real y confirmar el mapeo de campos; el detalle completo está en
+`docs/SAP-INTEGRATION-TODO.md`.
+
+1. Implementar `HttpServiceLayerTransport` (login/get/logout, solo lectura).
+2. Usar esa fuente en `cli.py`/`api_server.py` en lugar de `LocalMockDataSource`.
+   Su propiedad `is_mock=False` hace que los snapshots puedan marcarse `prod`.
 3. Nada más cambia — el motor de Excel y el runner no saben de dónde
    vienen los clientes.
 
