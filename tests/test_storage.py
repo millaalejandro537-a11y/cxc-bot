@@ -123,6 +123,7 @@ def test_publish_does_not_leave_corrupt_file_on_verification_failure(tmp_path, l
     assert leftovers == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="chmod POSIX no quita permisos de escritura de directorios en Windows; requiere ACL, no bits POSIX.")
 def test_publish_locked_destination_raises_file_locked_error(tmp_path, local_storage):
     local_result = tmp_path / "resultado.xlsx"
     local_result.write_bytes(b"nuevo")

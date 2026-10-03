@@ -10,20 +10,15 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from cxc_bot.config import load_route_config  # noqa: E402
 from cxc_bot.data_source import LocalMockDataSource  # noqa: E402
 
-REAL_SOURCE_FILE = Path("/Users/alejandrom/Desktop/CORTES septiembre.xlsx")
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 FIXTURE_BASE = FIXTURES_DIR / "CORTES_septiembre_original.xlsx"
 
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_fixture_copy():
-    """Copia el archivo real UNA vez a fixtures/ para que los tests nunca abran
-    (ni muchos menos escriban) el original en el Escritorio del usuario."""
-    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    if not FIXTURE_BASE.exists():
-        if not REAL_SOURCE_FILE.exists():
-            pytest.skip(f"No se encontro el archivo real de referencia: {REAL_SOURCE_FILE}")
-        shutil.copy2(REAL_SOURCE_FILE, FIXTURE_BASE)
+    """Usa el fixture local; nunca accede a archivos personales del host."""
+    if not FIXTURE_BASE.is_file():
+        pytest.fail("Falta tests/fixtures/CORTES_septiembre_original.xlsx; restaurar el fixture de pruebas.")
     yield FIXTURE_BASE
 
 

@@ -21,6 +21,17 @@ Todos los días (por defecto 06:00, hora de Honduras), el sistema:
 Soporta las 13 rutas operativas reales, incluida Comayagua (que en
 realidad combina dos archivos: Comayagua + Santa Cruz de Yojoa).
 
+### 1.1 Preparación física de rutas con consignaciones
+
+- En clientes de consignación, el cliente paga lo vendido.
+- El vendedor revisa existencias durante la visita.
+- Cobra las ventas realizadas.
+- Repone producto.
+- La hoja de consigna acompaña la preparación de la ruta.
+
+Este es un proceso operativo y físico; no implica que CXC BOT ejecute
+esas acciones.
+
 ## 2. Qué NO hace (todavía)
 
 - No se conecta a InSitu ni a SAP Business One / Service Layer.

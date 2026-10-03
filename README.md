@@ -477,3 +477,38 @@ Notas practicas para quien configure el nodo:
   listo, falta solo conectar un canal real cuando haya credenciales.
 - Despliegue de n8n en si (esta fase deja el CLI listo para que n8n lo
   invoque, no instala ni configura n8n).
+
+
+## Instalacion y validacion en Windows (PowerShell)
+
+Python 3.12 validado. No reutilizar el `.venv` recibido de macOS.
+Crear un entorno local fuera del repositorio y de Trabajo-Sync:
+
+```powershell
+$CxcEnv = Join-Path $HOME "Documents/Codex/environments/cxc-bot-windows/.venv"
+py -3.12 -m venv $CxcEnv
+$CxcPython = Join-Path $CxcEnv "Scripts/python.exe"
+# Ejecutar los comandos siguientes desde la raiz de CXC BOT.
+& $CxcPython -m pip install -r requirements-dev.txt
+& $CxcPython -B -m pytest tests/ -q -p no:cacheprovider
+# Smoke test seguro: servidor temporal, solo /health, sin operaciones reales.
+& $CxcPython -B -m pytest tests/test_api_server.py::test_health_endpoint -q -p no:cacheprovider
+```
+
+Para uso sin tests adicionales: instalar `requirements.txt`. `tzdata` es
+necesario en Windows para `America/Tegucigalpa` y otras zonas IANA.
+El entorno externo no pertenece al repositorio Git ni a Trabajo-Sync;
+no se sincroniza ni se versiona. Las reglas `.venv` existentes tambien lo
+excluirian si se utilizara una carpeta de ese nombre dentro del proyecto.
+Los fixtures deben estar disponibles en `tests/fixtures/`; ninguna prueba
+requiere archivos del Escritorio ni rutas personales del Mac.
+
+Arranque manual de API, solo cuando se autorice operar:
+
+```powershell
+& $CxcPython -m cxc_bot.api_server
+```
+
+Escucha en `127.0.0.1:8765`; detener con Ctrl+C. `GET /health` es seguro.
+No invocar `POST /process-due-routes` durante la validacion: procesa datos.
+No se necesita Docker/n8n para ejecutar los tests o la API local.

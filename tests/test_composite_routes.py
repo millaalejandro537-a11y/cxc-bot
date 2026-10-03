@@ -123,6 +123,8 @@ def test_composite_generation_never_touches_either_original(
     comayagua_base = comayagua_routes_root / "José Carpio" / "Comayagua" / "COMAYAGUA junio.xlsx"
     sta_cruz_base = comayagua_routes_root / "José Carpio" / "Santa Cruz de Yojoa" / "STA CRUZ mayo.xlsx"
     h1_before, h2_before = file_hash(comayagua_base), file_hash(sta_cruz_base)
+    fixture_paths = [f"{FIXTURES}/COMAYAGUA JUNIO.xlsx", f"{FIXTURES}/STA CRUZ MAYO.xlsx"]
+    fixture_hashes_before = [file_hash(path) for path in fixture_paths]
 
     generate_composite_route(
         composite=comayagua_composite,
@@ -135,14 +137,8 @@ def test_composite_generation_never_touches_either_original(
     assert file_hash(comayagua_base) == h1_before
     assert file_hash(sta_cruz_base) == h2_before
 
-    # Y el historico original de verdad (fuera de cualquier copia de trabajo)
-    # tampoco se toco nunca durante esta fase.
-    assert file_hash(f"{FIXTURES}/COMAYAGUA JUNIO.xlsx") == file_hash(
-        "/Users/alejandrom/Documents/Cosprobell/Rutas de Cosprobell/COMAYAGUA JUNIO.xlsx"
-    )
-    assert file_hash(f"{FIXTURES}/STA CRUZ MAYO.xlsx") == file_hash(
-        "/Users/alejandrom/Documents/Cosprobell/Rutas de Cosprobell/STA CRUZ MAYO.xlsx"
-    )
+    # Los fixtures fuente tambien deben permanecer intactos.
+    assert [file_hash(path) for path in fixture_paths] == fixture_hashes_before
 
 
 def test_composite_generation_is_generic_not_hardcoded(
