@@ -2,8 +2,8 @@
 
 El resto del motor (route_engine, excel_service) nunca importa openpyxl para leer
 SAP ni sabe de donde vienen los SapClientRecord: solo conoce esta interfaz.
-Sustituir LocalMockDataSource por SapServiceLayerDataSource no debe requerir
-tocar route_engine ni excel_service.
+Sustituir LocalMockDataSource por SapServiceLayerDataSource (sap_service_layer.py)
+no debe requerir tocar route_engine ni excel_service.
 """
 
 from __future__ import annotations
@@ -20,6 +20,13 @@ from .models import SapClientRecord
 
 class SapDataSource(ABC):
     """Interfaz que debe cumplir cualquier fuente de datos de clientes."""
+
+    @property
+    def is_mock(self) -> bool:
+        """True si los datos NO vienen de SAP real. Es lo que alimenta el candado
+        prod+mock del historial de negocio; por defecto una fuente es mock
+        (falla hacia el lado seguro) y solo la fuente real lo sobreescribe."""
+        return True
 
     @abstractmethod
     def fetch_clients(self) -> List[SapClientRecord]:
@@ -124,24 +131,3 @@ class InMemoryDataSource(SapDataSource):
 
     def fetch_clients(self) -> List[SapClientRecord]:
         return list(self._records)
-
-
-class SapServiceLayerDataSource(SapDataSource):
-    """Placeholder para la futura integracion real con SAP Business One Service Layer.
-
-    NO implementar en esta fase. Cuando se conecte, debe:
-      - autenticar contra el Service Layer (Login),
-      - consultar BusinessPartners filtrando CardCode que empiece con 'C',
-      - mapear los campos equivalentes a SapClientRecord,
-      - devolver la lista con la misma forma que LocalMockDataSource.fetch_clients().
-    El resto del sistema no necesita cambios cuando esto se implemente.
-    """
-
-    def __init__(self, *_, **__):
-        raise NotImplementedError(
-            "La integracion con SAP Business One Service Layer no esta implementada en esta fase. "
-            "Usa LocalMockDataSource mientras tanto."
-        )
-
-    def fetch_clients(self) -> List[SapClientRecord]:
-        raise NotImplementedError

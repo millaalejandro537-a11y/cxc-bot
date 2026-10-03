@@ -94,7 +94,6 @@ def _run_process_due_routes(overrides: dict) -> dict:
         business_history=business_history,
         config_versions=config_versions,
         environment=environment,
-        sap_is_mock=True,
         catchup_window_days=catchup_window_days,
     )
     return result.to_dict()

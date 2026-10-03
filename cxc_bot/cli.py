@@ -259,7 +259,6 @@ def cmd_process_due_routes(args) -> int:
         business_history=business_history,
         config_versions=config_versions,
         environment=args.environment,
-        sap_is_mock=True,  # LocalMockDataSource SIEMPRE es mock: el candado prod+mock aplica siempre aqui
         catchup_window_days=catchup_window_days,
     )
 

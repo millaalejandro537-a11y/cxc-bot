@@ -442,9 +442,13 @@ def process_due_routes(
     business_history: Optional[BusinessHistoryStore] = None,
     config_versions: Optional[ConfigVersionStore] = None,
     environment: str = "dev",
-    sap_is_mock: bool = True,
+    sap_is_mock: Optional[bool] = None,
     catchup_window_days: Optional[int] = None,
 ) -> ProcessRunResult:
+    # Si el llamador no lo indica, la fuente decide (candado prod+mock): una
+    # fuente real se declara con is_mock=False, cualquier otra cuenta como mock.
+    if sap_is_mock is None:
+        sap_is_mock = getattr(sap_data_source, "is_mock", True)
     history = history or HistoryStore()
     notifier = notifier or default_notifier()
     storage = storage or LocalRouteStorage()
