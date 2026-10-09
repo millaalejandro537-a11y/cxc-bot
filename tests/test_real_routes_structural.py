@@ -34,10 +34,9 @@ CASES = [
     ("YOROABRIL.xlsx", "YORO", None),
     ("sta barbara Junio.xlsx", "SANTA BARBARA", None),
     ("CHOLOMA 19-5.xlsx", "CHOLOMA", None),
-    # Las Vegas real difiere del demo sintetico de Fase 2 (data_sheet="Hoja1",
-    # no "Hoja2"): se prueba con una config ad-hoc que describe el archivo
-    # REAL, documentado en docs/reporte_estructural_rutas.md.
-    ("LAS VEGAS MAYO.xlsx", "LAS VEGAS", {"main_sheet": "LAS VEGAS", "data_sheet": "Hoja1"}),
+    # Las Vegas: config/routes.json describe el archivo REAL (portada "LAS VEGAS",
+    # datos SAP en "Hoja1"); ya no hace falta una config ad-hoc.
+    ("LAS VEGAS MAYO.xlsx", "LAS VEGAS", None),
 ]
 
 

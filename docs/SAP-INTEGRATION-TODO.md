@@ -70,4 +70,4 @@ Subclase de `ServiceLayerTransport` (`login`, `get`, `logout`):
 - **InSitu** (`InsituScheduleSource`): pausado por gerencia; es la fuente de la
   programación, no de SAP.
 - `NetworkRouteStorage` sin probar contra un share SMB real.
-- Config de la ruta `LAS VEGAS` con estructura sintética (ver HANDOFF §12).
+- ~~Config de `LAS VEGAS` sintética~~: corregida 2026-10-09 (ver PROJECT-STATE.md).

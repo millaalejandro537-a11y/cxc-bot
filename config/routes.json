@@ -10,12 +10,12 @@
   },
   "LAS VEGAS": {
     "vendor": "Erick Brizuela",
-    "main_sheet": "LASVEGAS",
-    "data_sheet": "Hoja2",
+    "main_sheet": "LAS VEGAS",
+    "data_sheet": "Hoja1",
     "fecha_cell": "B5",
     "header_row": 7,
     "data_start_row": 8,
-    "filename_prefix": "LASVEGAS"
+    "filename_prefix": "LAS VEGAS"
   },
   "LA LIMA": {
     "vendor": "Erick Brizuela",

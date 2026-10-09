@@ -131,10 +131,12 @@ def test_several_due_routes(tmp_path, base_file, sap_source, history, catalog, c
     # probar 2 rutas DISTINTAS en el mismo lote, no la misma ruta dos veces.
     d2 = root / "Erick Brizuela" / "Las Vegas"
     d2.mkdir(parents=True)
-    lasvegas_path = d2 / "LASVEGAS septiembre.xlsx"
+    lasvegas_path = d2 / "LAS VEGAS septiembre.xlsx"
     shutil.copy2(base_file, lasvegas_path)
     wb = openpyxl.load_workbook(lasvegas_path)
-    wb["CORTES"].title = "LASVEGAS"
+    # Estructura REAL de Las Vegas: portada "LAS VEGAS" y datos SAP en "Hoja1".
+    wb["CORTES"].title = "LAS VEGAS"
+    wb["Hoja2"].title = "Hoja1"
     wb.save(lasvegas_path)
 
     entries = [

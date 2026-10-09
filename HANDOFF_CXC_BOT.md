@@ -194,9 +194,9 @@ generado hasta ahora es y debe seguir siendo `dev`/`test`, nunca `prod`.
 `COMAYAGUA`) + `STA_CRUZ` (componente interno, no es ruta operativa
 independiente). Cada una construida inspeccionando su Excel real — dos
 familias de layout conviven (ver reporte estructural). Nota conocida: la
-config de `LAS VEGAS` sigue con la estructura sintética de Fase 2
-(`Hoja2`), no la real (`Hoja1`) — pendiente de reconciliar contra el
-archivo de producción real cuando esté disponible.
+config de `LAS VEGAS` estaba con la estructura sintética de Fase 2
+(`Hoja2`); **corregida el 2026-10-09** a la real (`LAS VEGAS` / `Hoja1`, prefijo
+`LAS VEGAS`). Ver `PROJECT-STATE.md`.
 
 ## 13. Villanueva
 
@@ -259,7 +259,7 @@ al cierre de esta sesión.
 ## 19. Deuda técnica conocida
 
 - `NetworkRouteStorage` sin probar contra un share SMB real.
-- Config de `LAS VEGAS` con estructura sintética de Fase 2, no la real.
+- ~~Config de `LAS VEGAS` sintética~~ (corregida 2026-10-09; ver PROJECT-STATE.md).
 - `api_server.py` no es un servicio del sistema (no sobrevive un reinicio
   del Mac sin relanzarlo a mano).
 - No hay CLI dedicado para `business_queries.py` (se usa importando el
