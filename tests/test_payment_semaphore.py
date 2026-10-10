@@ -117,8 +117,45 @@ def test_override_conserva_calculo_automatico_y_traza():
 def test_alerta_mayor_60_aunque_la_media_sea_buena():
     # una factura abierta con 61+ dias entre varias puntuales: B/A en media, alerta individual igual
     r = ev(serie([0] * 12) + [fac(99, CORTE - timedelta(days=60 + 75), estado="O")])
-    assert r.alertas and "75" in r.alertas[0] and r.calculado in ("A", "B", "C")
+    assert len(r.alertas_cobro) == 1 and "75" in r.alertas_cobro[0].texto and r.calculado in ("A", "B", "C")
     assert next(f for f in r.facturas if f.numero == "99").alerta_mayor_60
+
+
+def test_alertas_separadas_abiertas_son_cobro_y_pagadas_son_historicas_nunca_cobro():
+    pagada_mala = fac(50, date(2025, 1, 1), 90)                                  # pagada con 90 d de mora
+    abierta_mala = fac(51, CORTE - timedelta(days=60 + 70), estado="O", total=800.0)  # abierta con 70 d
+    r = ev(serie([0, 0], ini=date(2025, 6, 1)) + [pagada_mala, abierta_mala])
+    assert [(a.numero, a.mora, a.saldo_pendiente) for a in r.alertas_cobro] == [("51", 70, 800.0)]
+    assert [(a.numero, a.mora, a.saldo_pendiente) for a in r.alertas_historicas] == [("50", 90, None)]
+    assert all(a.tipo == ps.ALERTA_COBRO for a in r.alertas_cobro) and all(a.tipo == ps.ALERTA_HISTORICA for a in r.alertas_historicas)
+    assert "no es cobro pendiente" in r.alertas_historicas[0].texto
+    d = r.to_dict()
+    assert len(d["alertas_cobro"]) == 1 and len(d["alertas_historicas"]) == 1 and len(r.alertas) == 2
+
+
+def test_saldo_pendiente_de_alerta_de_cobro_descuenta_lo_aplicado():
+    f = ps.FacturaSAP("1", "1", CORTE - timedelta(days=200), None, 8400.0, 4330.0, "O", ())
+    r = ev([f] + serie([0, 0, 0]))
+    assert r.alertas_cobro[0].saldo_pendiente == 4070.0
+
+
+class _Fuente:
+    fecha_corte = CORTE
+    etiqueta = "prueba"
+
+    def __init__(self, datos):
+        self.datos = datos
+
+    def facturas_por_cliente(self, codigos):
+        return {c: self.datos.get(c, []) for c in codigos}
+
+
+def test_evaluar_ruta_usa_el_mismo_motor_y_aplica_decisiones():
+    fuente = _Fuente({"C1": serie([90] * 5), "C2": serie([0] * 4)})
+    dec = {"c1": ps.DecisionGerencia(ps.SOLO_CONTADO, "aprobado", "Gerencia", "2026-10-10")}
+    res = ps.evaluar_ruta(["C1", "C2", "C3"], fuente, 60, dec)
+    assert res["C1"].calculado == ps.CANDIDATO_SOLO_CONTADO and res["C1"].final == ps.SOLO_CONTADO and res["C1"].color_final == "ROJO"
+    assert res["C2"].final == "A" and res["C3"].final == ps.EN_PRUEBA
 
 
 def test_evidencia_por_factura_expone_recibos_y_motivo():

@@ -16,7 +16,9 @@ Reglas (Hub "Cosprobell CxC -- Principal", LEEME del paquete de datos 08-09/10/2
   cierres sin cobro integral acreditado (p. ej. nota de credito) cuentan en la ventana y el historial, no en la media.
 - Media sin redondear, sin predominancia: A <= 5; B > 5 y <= 15; C > 15 y <= 60; > 60 CANDIDATO_SOLO_CONTADO
   (revision humana obligatoria).
-- Alerta independiente por cada factura evaluada con mora > 60, aunque la media del cliente sea mejor.
+- Alerta independiente por cada factura evaluada con mora > 60, aunque la media del cliente sea mejor. Se SEPARAN:
+  abiertas = alertas OPERATIVAS DE COBRO (hay saldo pendiente); pagadas = alertas HISTORICAS DE COMPORTAMIENTO (ya
+  cobradas: nunca son cobro pendiente).
 - Las decisiones de gerencia (override) se guardan APARTE del calculo automatico, con autor, motivo y fecha.
 
 Sustituye a `payment_behavior.evaluate_client` (reglas superadas: predominio y minimo de 4 PAGADAS).
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 VENTANA_FACTURAS = 10
 MIN_HISTORIAL = 4
@@ -90,6 +92,22 @@ class FacturaSAP:
     recibos: Tuple[Recibo, ...] = ()
 
 
+ALERTA_COBRO = "COBRO_OPERATIVA"          # factura ABIERTA con mora > 60: gestion de cobro
+ALERTA_HISTORICA = "COMPORTAMIENTO_HISTORICO"  # factura PAGADA con mora > 60: solo historial de conducta
+
+
+@dataclass(frozen=True)
+class Alerta:
+    tipo: str
+    numero: str
+    mora: int
+    saldo_pendiente: Optional[float]   # solo en alertas de cobro; None en historicas (no hay nada que cobrar)
+    texto: str
+
+    def to_dict(self) -> dict:
+        return {"tipo": self.tipo, "numero": self.numero, "mora": self.mora, "saldo_pendiente": self.saldo_pendiente, "texto": self.texto}
+
+
 @dataclass(frozen=True)
 class DecisionGerencia:
     """Override individual, fundamentado y autorizado. No cambia umbrales ni el calculo base."""
@@ -146,10 +164,15 @@ class ResultadoCliente:
     abiertas: int
     no_acreditadas: int
     evaluables: int
-    alertas: Tuple[str, ...]
+    alertas_cobro: Tuple[Alerta, ...]
+    alertas_historicas: Tuple[Alerta, ...]
     explicacion: Tuple[str, ...]
     facturas: Tuple[EvidenciaFactura, ...]
     decision_gerencia: Optional[DecisionGerencia]
+
+    @property
+    def alertas(self) -> Tuple[Alerta, ...]:
+        return self.alertas_cobro + self.alertas_historicas
 
     @property
     def color_calculado(self) -> str:
@@ -170,7 +193,9 @@ class ResultadoCliente:
             "promedio_mora": round(self.promedio_mora, 2) if self.promedio_mora is not None else None,
             "suma_mora": self.suma_mora, "facturas_historial": self.historial_total, "facturas_ventana": self.en_ventana,
             "pagadas": self.pagadas, "abiertas": self.abiertas, "no_acreditadas": self.no_acreditadas,
-            "facturas_en_media": self.evaluables, "alertas": list(self.alertas), "explicacion": list(self.explicacion),
+            "facturas_en_media": self.evaluables,
+            "alertas_cobro": [a.to_dict() for a in self.alertas_cobro],
+            "alertas_historicas": [a.to_dict() for a in self.alertas_historicas], "explicacion": list(self.explicacion),
             "facturas": [f.to_dict() for f in self.facturas],
             "decision_gerencia": self.decision_gerencia.__dict__ if self.decision_gerencia else None,
             "requiere_gerencia": self.requiere_gerencia,
@@ -250,8 +275,14 @@ def evaluar_cliente(
     recientes = sorted(todas, key=lambda f: (f.fecha_factura.toordinal(), _numero_orden(f)), reverse=True)[:VENTANA_FACTURAS]
     ev = [_evidencia(f, fecha_corte, plazo_dias) for f in recientes]
     moras = [e.mora for e in ev if e.en_media and e.mora is not None]
-    alertas = [f"Factura {e.numero}: mora de {e.mora} días (> {ALERTA_FACTURA})" + (" — abierta" if e.estado == ABIERTA else "")
-               for e in ev if e.alerta_mayor_60]
+    alertas_cobro = tuple(
+        Alerta(ALERTA_COBRO, e.numero, e.mora, round(max(0.0, e.total - e.aplicado_sap), 2),
+               f"Factura {e.numero} ABIERTA con {e.mora} días de mora (> {ALERTA_FACTURA}): gestión de cobro.")
+        for e in ev if e.alerta_mayor_60 and e.estado == ABIERTA)
+    alertas_hist = tuple(
+        Alerta(ALERTA_HISTORICA, e.numero, e.mora, None,
+               f"Factura {e.numero} PAGADA con {e.mora} días de mora (> {ALERTA_FACTURA}): historial de comportamiento, no es cobro pendiente.")
+        for e in ev if e.alerta_mayor_60 and e.estado != ABIERTA)
 
     expl: List[str] = []
     promedio: Optional[float] = None
@@ -282,4 +313,26 @@ def evaluar_cliente(
         codigo=codigo, calculado=calculado, final=final, promedio_mora=promedio, suma_mora=sum(moras),
         historial_total=historial, en_ventana=len(ev), pagadas=sum(1 for e in ev if e.estado == PAGADA),
         abiertas=sum(1 for e in ev if e.estado == ABIERTA), no_acreditadas=sum(1 for e in ev if e.estado == CERRADA_NO_ACREDITADA),
-        evaluables=len(moras), alertas=tuple(alertas), explicacion=tuple(expl), facturas=tuple(ev), decision_gerencia=decision)
+        evaluables=len(moras), alertas_cobro=alertas_cobro, alertas_historicas=alertas_hist, explicacion=tuple(expl), facturas=tuple(ev), decision_gerencia=decision)
+
+
+class PaymentEvidenceSource(Protocol):
+    """Fuente de evidencia (facturas + recibos) por cliente. Hoy: exportes SAP (cxc_bot.sap_exports); manana: Cosprobell BD."""
+
+    fecha_corte: date
+    etiqueta: str
+
+    def facturas_por_cliente(self, codigos: Sequence[str]) -> Dict[str, List[FacturaSAP]]: ...
+
+
+def evaluar_ruta(
+    codigos: Iterable[str],
+    fuente: PaymentEvidenceSource,
+    plazo_dias: int,
+    decisiones: Optional[Dict[str, DecisionGerencia]] = None,
+) -> Dict[str, ResultadoCliente]:
+    """Evalua todos los clientes de una ruta con el mismo motor. Un cliente sin facturas queda EN_PRUEBA (0 en historial)."""
+    cods = [c.strip().upper() for c in codigos]
+    facturas = fuente.facturas_por_cliente(cods)
+    dec = {k.strip().upper(): v for k, v in (decisiones or {}).items()}
+    return {c: evaluar_cliente(c, facturas.get(c, []), fuente.fecha_corte, plazo_dias, dec.get(c)) for c in cods}

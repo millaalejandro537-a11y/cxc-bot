@@ -15,7 +15,8 @@
     "fecha_cell": "B5",
     "header_row": 7,
     "data_start_row": 8,
-    "filename_prefix": "LAS VEGAS"
+    "filename_prefix": "LAS VEGAS",
+    "credit_days": 60
   },
   "LA LIMA": {
     "vendor": "Erick Brizuela",
@@ -69,7 +70,8 @@
     "passthrough_cols": [
       "D"
     ],
-    "filename_prefix": "YORO"
+    "filename_prefix": "YORO",
+    "credit_days": 60
   },
   "ROATAN": {
     "vendor": "Darwing Milla",

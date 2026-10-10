@@ -11,6 +11,7 @@ Endpoints (todos GET, JSON salvo el CSV):
     /api/rutas/<id>/reporte.csv      descarga
     /api/clientes/<codigo>           detalle + ultimas 10 facturas + explicacion
     /api/prioridades                 ?ruta=&n=10  mayores saldos del snapshot (consulta 1, 08/10/2026)
+    /api/alertas                     ?ruta=  alertas de cobro (facturas ABIERTAS > 60 d) e historicas (PAGADAS > 60 d), separadas
 No hay endpoints de escritura: el portal no escribe en SAP ni en Cosprobell BD.
 """
 
@@ -46,7 +47,7 @@ REGLAS = {
     "minimo_historial": sm.MIN_HISTORIAL,
     "umbrales_media_mora": {"A": f"≤ {sm.TOLERANCIA_A}", "B": f"> {sm.TOLERANCIA_A} y ≤ {sm.LIMITE_B}", "C": f"> {sm.LIMITE_B} y ≤ {sm.LIMITE_C}", "CANDIDATO_SOLO_CONTADO": f"> {sm.LIMITE_C}"},
     "abiertas_entran_a_la_media_si": f"mora > {sm.ABIERTA_MORA_MINIMA} días",
-    "alerta_por_factura": f"mora > {sm.ALERTA_FACTURA} días",
+    "alerta_por_factura": f"mora > {sm.ALERTA_FACTURA} días: abiertas = alerta operativa de cobro; pagadas = alerta histórica de comportamiento (nunca cobro pendiente)",
     "plazos": {"foranea": sm.PLAZO_FORANEA, "local": sm.PLAZO_LOCAL},
     "notas": [
         "Se evalúan las 10 facturas más recientes (emisión DESC, desempate número DESC).",
@@ -80,12 +81,12 @@ def _csv(r: Ruta) -> bytes:
     w = csv.writer(buf)
     w.writerow(["# Ruta", r.nombre, "Fuente", r.fuente.get("etiqueta"), "Corte", r.fuente.get("fecha_corte")])
     w.writerow(["Folder", "Zona", "Codigo", "Cliente", "Saldo", "Clasificacion calculada", "Clasificacion final", "Color final",
-                "Mora media", "Facturas historial", "Facturas evaluables", "Alertas > 60 d", "Decision de gerencia"])
+                "Mora media", "Facturas historial", "Facturas evaluables", "Alertas de cobro (abiertas > 60 d)", "Alertas historicas (pagadas > 60 d)", "Decision de gerencia"])
     for c in r.clientes:
         s = c.resultado
         dec = s.decision_gerencia
         w.writerow([c.folder, c.zona, c.codigo, c.nombre, f"{c.saldo:.2f}", s.calculado, s.final, s.color_final,
-                    f"{s.promedio_mora:.2f}" if s.promedio_mora is not None else "", s.historial_total, s.evaluables, len(s.alertas),
+                    f"{s.promedio_mora:.2f}" if s.promedio_mora is not None else "", s.historial_total, s.evaluables, len(s.alertas_cobro), len(s.alertas_historicas),
                     f"{dec.actor}: {dec.motivo}" if dec else ""])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
@@ -179,6 +180,21 @@ def make_handler(store: RouteStore, web_dir: Optional[Path]):
                 return self._json({
                     "nota": "Mayores saldos del snapshot. No es cartera en vivo; para priorizar cobro se requiere fuente fiable.",
                     "prioridades": [{**r.cliente_dict(c), "ruta_nombre": r.nombre} for r, c in items[:n]]})
+            if p == ["alertas"]:
+                rid = qs.get("ruta", [""])[0]
+                rutas = [store.ruta(rid)] if rid and store.ruta(rid) else [r for r in store.rutas.values() if r.fuente.get("tipo") != "SINTETICO_DEMO"]
+                cobro, hist = [], []
+                for r in rutas:
+                    for c in r.clientes:
+                        base = {"codigo": c.codigo, "cliente": c.nombre, "folder": c.folder, "ruta": r.route_id, "ruta_nombre": r.nombre,
+                                "vendedor": r.vendedor, "fecha_corte": r.fuente.get("fecha_corte"), "clasificacion_final": c.resultado.final}
+                        cobro += [{**base, **a.to_dict()} for a in c.resultado.alertas_cobro]
+                        hist += [{**base, **a.to_dict()} for a in c.resultado.alertas_historicas]
+                cobro.sort(key=lambda a: (a["saldo_pendiente"] or 0), reverse=True)
+                hist.sort(key=lambda a: a["mora"], reverse=True)
+                return self._json({
+                    "nota": "Datos del snapshot, no en vivo. Las alertas de cobro son operativas (hay saldo pendiente); las históricas son de comportamiento y NO son cobro pendiente.",
+                    "cobro_operativas": cobro, "historicas_comportamiento": hist})
             return self._json({"error": "Endpoint no encontrado"}, 404)
 
         def _static(self, path: str):
@@ -199,7 +215,13 @@ def make_handler(store: RouteStore, web_dir: Optional[Path]):
     return Handler
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 def run(host: str, port: int, data_dir: Optional[Path], web_dir: Optional[Path]) -> None:
+    # Sin autenticacion real el portal SOLO escucha en la maquina local (datos privados de clientes).
+    if host not in LOOPBACK:
+        raise SystemExit(f"Host '{host}' rechazado: el portal solo puede escuchar en loopback ({', '.join(LOOPBACK)}) hasta que exista autenticación real.")
     store = RouteStore(data_dir)
     srv = ThreadingHTTPServer((host, port), make_handler(store, web_dir))
     print(f"Portal CxC (solo lectura) en http://{host}:{port}  | rutas cargadas: {', '.join(store.rutas) or '(ninguna)'}")

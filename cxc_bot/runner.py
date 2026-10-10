@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from . import excel_service, validators
 from .business_calendar import BusinessCalendar
@@ -37,6 +37,7 @@ from .config_versioning import ConfigVersionStore
 from .data_source import SapDataSource
 from .file_resolver import FileResolutionError, resolve_base_file
 from .history_store import ExecutionRecord, HistoryStore
+from . import payment_semaphore
 from .models import ClientEntry, ScheduleEntry
 from .notifier import Notifier, default_notifier
 from .schedule_source import ScheduleSource
@@ -66,8 +67,20 @@ class RouteJobResult:
     error_category: Optional[str] = None
     error_message: Optional[str] = None
     duration_ms: Optional[int] = None
+    # Semaforo de pago (opcional): resumen por cliente calculado con cxc_bot.payment_semaphore. None si no se
+    # pidio, si la ruta no tiene plazo de credito definido o si fallo (en ese caso `semaphore_error`).
+    semaphore: Optional[dict] = None
+    semaphore_error: Optional[str] = None
 
     def to_dict(self) -> dict:
+        d = self._base_dict()
+        if self.semaphore is not None:
+            d["semaphore"] = self.semaphore
+        if self.semaphore_error is not None:
+            d["semaphore_error"] = self.semaphore_error
+        return d
+
+    def _base_dict(self) -> dict:
         return {
             "vendor": self.vendor,
             "route": self.route,
@@ -218,6 +231,34 @@ def _classify_validation_errors(errors: List[str]) -> str:
     return "validacion_fallida"
 
 
+def _evaluate_payment_semaphore(route_config, roster, evidence, decisions, plazo_override=None) -> Tuple[Optional[dict], Optional[str]]:
+    """Semaforo de pago de los clientes de la ruta con el motor unico. Nunca debe impedir una publicacion:
+    devuelve (resumen, None), (None, None) si no aplica o (None, error)."""
+    plazo = plazo_override if plazo_override is not None else getattr(route_config, "credit_days", None)
+    if evidence is None or plazo is None or not roster:
+        return None, None
+    try:
+        codigos = [c.codigo for c in roster]
+        res = payment_semaphore.evaluar_ruta(codigos, evidence, plazo, decisions)
+        clientes = []
+        for pos, c in enumerate(roster, 1):
+            r = res[c.codigo.strip().upper()]
+            clientes.append({
+                "posicion": pos, "codigo": c.codigo, "calculado": r.calculado, "final": r.final, "color_final": r.color_final,
+                "promedio_mora": round(r.promedio_mora, 2) if r.promedio_mora is not None else None,
+                "facturas_historial": r.historial_total, "facturas_evaluables": r.evaluables,
+                "alertas_cobro": len(r.alertas_cobro), "alertas_historicas": len(r.alertas_historicas),
+                "decision_gerencia": r.decision_gerencia is not None, "requiere_gerencia": r.requiere_gerencia,
+            })
+        conteo: Dict[str, int] = {}
+        for c in clientes:
+            conteo[c["final"]] = conteo.get(c["final"], 0) + 1
+        return {"fecha_corte": evidence.fecha_corte.isoformat(), "fuente": evidence.etiqueta, "plazo_dias": plazo,
+                "clasificacion": conteo, "clientes": clientes}, None
+    except Exception as e:  # noqa: BLE001 - el semaforo es informativo para la salida; no tumba la generacion
+        return None, f"{type(e).__name__}: {e}"
+
+
 def process_one_entry(
     entry: ScheduleEntry,
     *,
@@ -233,6 +274,8 @@ def process_one_entry(
     config_versions: Optional[ConfigVersionStore] = None,
     environment: str = "dev",
     sap_is_mock: bool = True,
+    payment_evidence: Optional["payment_semaphore.PaymentEvidenceSource"] = None,
+    payment_decisions: Optional[Dict[str, "payment_semaphore.DecisionGerencia"]] = None,
 ) -> RouteJobResult:
     natural_key = entry.natural_key
     started = time.monotonic()
@@ -417,11 +460,14 @@ def process_one_entry(
     except Exception:
         pass  # best-effort; HistoryStore ya es la fuente de verdad de idempotencia
 
+    semaphore, semaphore_error = _evaluate_payment_semaphore(route_config, final_roster, payment_evidence, payment_decisions)
     return _finish(
         "success",
         output_file=str(published_path),
         source_file=source_file_label,
         client_count=result.client_count,
+        semaphore=semaphore,
+        semaphore_error=semaphore_error,
     )
 
 
@@ -444,6 +490,8 @@ def process_due_routes(
     environment: str = "dev",
     sap_is_mock: Optional[bool] = None,
     catchup_window_days: Optional[int] = None,
+    payment_evidence: Optional["payment_semaphore.PaymentEvidenceSource"] = None,
+    payment_decisions: Optional[Dict[str, "payment_semaphore.DecisionGerencia"]] = None,
 ) -> ProcessRunResult:
     # Si el llamador no lo indica, la fuente decide (candado prod+mock): una
     # fuente real se declara con is_mock=False, cualquier otra cuenta como mock.
@@ -556,6 +604,8 @@ def process_due_routes(
                 config_versions=config_versions,
                 environment=environment,
                 sap_is_mock=sap_is_mock,
+                payment_evidence=payment_evidence,
+                payment_decisions=payment_decisions,
             )
         except Exception as e:  # noqa: BLE001 - un fallo aqui no debe tumbar el resto del lote
             job_result = RouteJobResult(

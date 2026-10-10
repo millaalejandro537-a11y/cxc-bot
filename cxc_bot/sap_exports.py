@@ -11,15 +11,16 @@ Un mismo recibo respaldando una factura se cuenta una sola vez (el mayor monto o
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 import openpyxl
 
-from cxc_bot.payment_semaphore import FacturaSAP, Recibo
+from .payment_semaphore import DecisionGerencia, FacturaSAP, Recibo
 
 C1, C2, C3 = "consulta 1.xlsx", "consulta 2.xlsx", "consulta 3.xlsx"
 
@@ -134,3 +135,34 @@ def cargar_consultas(data_dir: Path, codigos: Optional[Set[str]] = None) -> Dato
         if b["estado"] == "O":
             saldo[b["cod"]] += b["total"] - b["aplicado"]
     return DatosSAP(dict(facturas), nombres, {k: round(v, 2) for k, v in saldo.items()})
+
+
+DECISIONES_ARCHIVO = "decisiones_gerencia.json"
+
+
+def cargar_decisiones(data_dir: Path) -> Dict[str, DecisionGerencia]:
+    """Decisiones de gerencia registradas FUERA de los Excel originales (que no se alteran).
+    Formato: {"C10001": {"clasificacion_final": "SOLO_CONTADO", "motivo": "...", "actor": "Gerencia", "fecha": "2026-10-10"}}"""
+    p = Path(data_dir) / DECISIONES_ARCHIVO
+    if not p.is_file():
+        return {}
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    return {k.strip().upper(): DecisionGerencia(v["clasificacion_final"], v["motivo"], v.get("actor", "Gerencia"), v.get("fecha"))
+            for k, v in raw.items() if not k.startswith("_")}
+
+
+class SapExportEvidenceSource:
+    """Fuente de evidencia basada en las tres consultas SAP exportadas (snapshot historico, NO en vivo)."""
+
+    def __init__(self, data_dir: Path, fecha_corte: date = date(2026, 10, 8), etiqueta: str = "Snapshot SAP 08/10/2026 (consultas exportadas)"):
+        self.data_dir, self.fecha_corte, self.etiqueta = Path(data_dir), fecha_corte, etiqueta
+        self._cache: Optional[DatosSAP] = None
+
+    def datos(self) -> DatosSAP:
+        if self._cache is None:
+            self._cache = cargar_consultas(self.data_dir, None)
+        return self._cache
+
+    def facturas_por_cliente(self, codigos: Sequence[str]) -> Dict[str, List[FacturaSAP]]:
+        d = self.datos()
+        return {c.upper(): d.facturas.get(c.upper(), []) for c in codigos}

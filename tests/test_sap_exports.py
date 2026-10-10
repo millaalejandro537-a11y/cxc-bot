@@ -3,7 +3,7 @@ from datetime import date
 import openpyxl
 
 from cxc_bot import payment_semaphore as ps
-from cxc_portal.sap_loader import cargar_consultas
+from cxc_bot.sap_exports import cargar_consultas
 
 H1 = ["#", "CodigoCliente", "NombreCliente", "FechaAltaCliente", "IdFactura", "NumeroFactura", "FechaFactura", "FechaVencimiento",
       "MontoFactura", "ImporteAplicado", "Estado", "Moneda"]

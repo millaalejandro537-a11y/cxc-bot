@@ -74,7 +74,7 @@ function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente }) {
             </div>
             <p className="muted small">
               {r.overrides_gerencia > 0 && `${r.overrides_gerencia} decisión(es) de gerencia sobre el cálculo automático · `}
-              {r.alertas_mayor_60} alerta(s) de factura con mora &gt; 60 días
+              {r.alertas_cobro} alerta(s) de cobro (abiertas &gt; 60 d) · {r.alertas_historicas} histórica(s) de comportamiento (pagadas &gt; 60 d)
             </p>
             {r.avisos.length > 0 && <p className="error small">⚠ {r.avisos.length} diferencia(s) de conciliación con el Excel aprobado (ver detalle del cliente)</p>}
             <button onClick={() => abrirRuta(r.route_id)}>Ver ruta</button>
@@ -147,7 +147,7 @@ function Ruta({ id, abrirCliente, volver }) {
       </div>
       <div className="tablewrap">
         <table>
-          <thead><tr><th>Folder</th><th>Cliente</th><th>Clasificación final</th><th className="num">Mora media</th><th className="num">Alertas &gt;60</th><th className="num">Saldo</th></tr></thead>
+          <thead><tr><th>Folder</th><th>Cliente</th><th>Clasificación final</th><th className="num">Mora media</th><th className="num">Cobro / histórica &gt;60</th><th className="num">Saldo</th></tr></thead>
           <tbody>
             {clientes.map((c) => (
               <tr key={c.codigo} className="click" onClick={() => abrirCliente(c.codigo)}>
@@ -155,7 +155,7 @@ function Ruta({ id, abrirCliente, volver }) {
                 <td>{c.nombre}<br /><small className="muted">{c.codigo}</small></td>
                 <td><Semaforo s={c.semaforo} /></td>
                 <td className="num">{c.semaforo.promedio_mora != null ? `${c.semaforo.promedio_mora} d` : '—'}</td>
-                <td className="num">{c.semaforo.alertas.length || '—'}</td>
+                <td className="num">{c.semaforo.alertas_cobro.length || c.semaforo.alertas_historicas.length ? `${c.semaforo.alertas_cobro.length} / ${c.semaforo.alertas_historicas.length}` : '—'}</td>
                 <td className="num">{money(c.saldo)}</td>
               </tr>
             ))}
@@ -197,7 +197,7 @@ function Cliente({ codigo, volver }) {
           )}
           <p className="muted small">Calculada automáticamente por el motor Python a partir de las consultas SAP del {fdate(c.fuente.fecha_corte)}.</p>
           {c.conciliacion_gerencia && (c.conciliacion_gerencia.coincide
-            ? <p className="small okmsg">✓ Coincide con el Excel aprobado por gerencia.</p>
+            ? <p className="small okmsg">✓ Coincide con el Excel aprobado por gerencia.{c.conciliacion_gerencia.explicadas_por_decision_posterior?.length > 0 && <span className="muted"> Nota: {c.conciliacion_gerencia.explicadas_por_decision_posterior.join('; ')}.</span>}</p>
             : <p className="error small">⚠ Difiere del Excel aprobado: {c.conciliacion_gerencia.diferencias.join('; ')}</p>)}
         </article>
         <article className="card">
@@ -208,7 +208,8 @@ function Cliente({ codigo, volver }) {
       </div>
       <h3>¿Por qué este semáforo?</h3>
       <ul className="notas">{s.explicacion.map((e) => <li key={e}>{e}</li>)}</ul>
-      {s.alertas.length > 0 && (<><h3>Alertas</h3><ul className="alertas">{s.alertas.map((a) => <li key={a}>{a}</li>)}</ul></>)}
+      {s.alertas_cobro.length > 0 && (<><h3>Alertas de cobro (facturas abiertas &gt; 60 días)</h3><ul className="alertas">{s.alertas_cobro.map((a) => <li key={a.numero}>{a.texto} Saldo pendiente: {money(a.saldo_pendiente)}.</li>)}</ul></>)}
+      {s.alertas_historicas.length > 0 && (<><h3>Alertas históricas de comportamiento (facturas pagadas &gt; 60 días)</h3><p className="muted small">Ya cobradas: no son cobro pendiente.</p><ul className="hist">{s.alertas_historicas.map((a) => <li key={a.numero}>{a.texto}</li>)}</ul></>)}
       <h3>Últimas {s.facturas.length} facturas (evidencia)</h3>
       <p className="muted small">{s.facturas_historial} factura(s) en el historial · {s.pagadas} pagada(s) · {s.abiertas} abierta(s) · {s.no_acreditadas} cierre(s) sin cobro acreditado · {s.facturas_en_media} evaluable(s) · mora = max(0, último recibo contable − emisión − {c.plazo_dias ?? 60} días); el vencimiento SAP se muestra solo para cotejo.</p>
       {s.facturas.length === 0 ? (
@@ -244,28 +245,49 @@ function Cliente({ codigo, volver }) {
 }
 
 function Alertas({ rutas, abrirCliente }) {
+  const [al, setAl] = useState(null)
   const [items, setItems] = useState(null)
   useEffect(() => {
-    Promise.all(rutas.map((r) => api(`/rutas/${r.route_id}/clientes`))).then((all) =>
+    const reales = rutas.filter((r) => r.fuente.tipo !== 'SINTETICO_DEMO')
+    Promise.all(reales.map((r) => api(`/alertas?ruta=${r.route_id}`))).then((all) =>
+      setAl({ cobro: all.flatMap((d) => d.cobro_operativas), hist: all.flatMap((d) => d.historicas_comportamiento) }))
+    Promise.all(reales.map((r) => api(`/rutas/${r.route_id}/clientes`))).then((all) =>
       setItems(all.flatMap((d) => d.clientes.map((c) => ({ ...c, ruta_nombre: d.ruta.nombre })))))
   }, [rutas])
-  if (!items) return <p>Cargando…</p>
+  if (!al || !items) return <p>Cargando…</p>
   const gerencia = items.filter((c) => c.semaforo.requiere_gerencia)
-  const f60 = items.filter((c) => c.semaforo.alertas.length)
+  const cobro = [...al.cobro].sort((a, b) => (b.saldo_pendiente || 0) - (a.saldo_pendiente || 0))
   return (
     <>
-      <h3>Pendientes de decisión de gerencia</h3>
-      {gerencia.length === 0 ? <p className="muted">Ninguno en los datos cargados.</p> : (
+      <p className="aviso">Datos del snapshot SAP 08/10/2026, no en vivo. Las alertas de <b>cobro</b> son operativas (hay saldo pendiente); las <b>históricas</b> describen comportamiento de facturas ya pagadas y no son cobro pendiente.</p>
+      <h3>Alertas de cobro: facturas abiertas con más de 60 días ({cobro.length})</h3>
+      {cobro.length === 0 ? <p className="muted">Ninguna.</p> : (
+        <div className="tablewrap"><table>
+          <thead><tr><th>Cliente</th><th>Ruta</th><th>Factura</th><th className="num">Mora</th><th className="num">Saldo pendiente</th></tr></thead>
+          <tbody>{cobro.map((a) => (
+            <tr key={a.codigo + a.numero} className="click" onClick={() => abrirCliente(a.codigo)}>
+              <td>{a.cliente}<br /><small className="muted">{a.codigo} · {a.folder}</small></td><td>{a.ruta_nombre}</td><td>{a.numero}</td>
+              <td className="num">{a.mora} d</td><td className="num">{money(a.saldo_pendiente)}</td></tr>))}</tbody>
+        </table></div>
+      )}
+      <h3>Pendientes de decisión de gerencia ({gerencia.length})</h3>
+      {gerencia.length === 0 ? <p className="muted">Ninguno.</p> : (
         <ul className="lista">{gerencia.map((c) => (
           <li key={c.codigo} onClick={() => abrirCliente(c.codigo)} className="click"><Dot color={c.semaforo.color_final} title="pendiente" /> {c.nombre} <small className="muted">· {c.ruta_nombre} · {c.semaforo.etiqueta_calculada}</small></li>
         ))}</ul>
       )}
-      <h3>Facturas con mora &gt; 60 días (alerta por factura)</h3>
-      {f60.length === 0 ? <p className="muted">Ninguna en los datos con detalle de facturas.</p> : (
-        <ul className="lista">{f60.map((c) => (
-          <li key={c.codigo} onClick={() => abrirCliente(c.codigo)} className="click">{c.nombre} <small className="muted">· {c.semaforo.alertas.join(' ')}</small></li>
-        ))}</ul>
+      <h3>Alertas históricas de comportamiento: facturas pagadas con más de 60 días de mora ({al.hist.length})</h3>
+      <p className="muted small">Ya están cobradas: sirven para entender la conducta del cliente, no para cobrar.</p>
+      {al.hist.length === 0 ? <p className="muted">Ninguna.</p> : (
+        <div className="tablewrap"><table>
+          <thead><tr><th>Cliente</th><th>Ruta</th><th>Factura</th><th className="num">Mora</th><th>Clasificación final</th></tr></thead>
+          <tbody>{al.hist.slice(0, 60).map((a) => (
+            <tr key={a.codigo + a.numero} className="click" onClick={() => abrirCliente(a.codigo)}>
+              <td>{a.cliente}<br /><small className="muted">{a.codigo} · {a.folder}</small></td><td>{a.ruta_nombre}</td><td>{a.numero}</td>
+              <td className="num">{a.mora} d</td><td>{(CLASES.find(([k]) => k === a.clasificacion_final) || [0, a.clasificacion_final])[1]}</td></tr>))}</tbody>
+        </table></div>
       )}
+      {al.hist.length > 60 && <p className="muted small">Se muestran las 60 de mayor mora de {al.hist.length}; el detalle completo está en cada cliente.</p>}
       <h3>Hojas de visita y salidas sin visita <span className="badge maqueta">MAQUETA</span></h3>
       <p className="muted">Pendiente: cobertura de hojas de visita (previstas / firmadas / no firmadas / motivos), 3 salidas consecutivas sin visitar y oportunidades de clientes A. Requiere un registro propio de visitas (BD separada de Cosprobell BD); aún no hay datos reales ni escritura.</p>
     </>

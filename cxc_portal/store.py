@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from cxc_bot import payment_semaphore as ps
 
 from .gerencia_excel import FilaAprobada, leer_aprobado
-from .sap_loader import cargar_consultas
+from cxc_bot.sap_exports import cargar_consultas, cargar_decisiones
 
 FUENTE_SNAPSHOT_SAP = "SNAPSHOT_SAP_HISTORICO"
 FUENTE_SINTETICO = "SINTETICO_DEMO"
@@ -67,7 +67,8 @@ class Ruta:
             "saldo_total": round(sum(c.saldo for c in self.clientes), 2),
             "clasificacion": final, "clasificacion_calculada": calc,
             "overrides_gerencia": sum(1 for c in self.clientes if c.resultado.decision_gerencia),
-            "alertas_mayor_60": sum(len(c.resultado.alertas) for c in self.clientes),
+            "alertas_cobro": sum(len(c.resultado.alertas_cobro) for c in self.clientes),
+            "alertas_historicas": sum(len(c.resultado.alertas_historicas) for c in self.clientes),
             "avisos": self.avisos,
         }
 
@@ -86,7 +87,7 @@ def _decision(f: FilaAprobada) -> Optional[ps.DecisionGerencia]:
                                actor="Gerencia", fecha=FECHA_DECISIONES)
 
 
-def _conciliar(f: FilaAprobada, r: ps.ResultadoCliente) -> dict:
+def _conciliar(f: FilaAprobada, r: ps.ResultadoCliente, decision_posterior: bool = False) -> dict:
     """Cotejo motor Python vs Excel aprobado: los conteos y la media deben coincidir; si no, se ve en el portal."""
     difs = []
     pares = [("historial", f.historial, r.historial_total), ("ventana", f.ventana, r.en_ventana), ("pagadas", f.pagadas, r.pagadas),
@@ -97,19 +98,25 @@ def _conciliar(f: FilaAprobada, r: ps.ResultadoCliente) -> dict:
             difs.append(f"{nombre}: Excel {esp} vs motor {got}")
     if f.calculado != r.calculado:
         difs.append(f"clasificación calculada: Excel {f.calculado} vs motor {r.calculado}")
+    explicadas = []
     if f.final != r.final:
-        difs.append(f"clasificación final: Excel {f.final} vs portal {r.final}")
-    return {"coincide": not difs, "diferencias": difs}
+        if decision_posterior:  # el Excel original NO se altera: la decision gerencial posterior se registra aparte
+            explicadas.append(f"clasificación final: Excel aprobado {f.final}; decisión posterior de gerencia {r.final} (el Excel original se conserva sin cambios)")
+        else:
+            difs.append(f"clasificación final: Excel {f.final} vs portal {r.final}")
+    return {"coincide": not difs, "diferencias": difs, "explicadas_por_decision_posterior": explicadas}
 
 
 def construir_ruta_aprobada(*, route_id: str, nombre: str, vendedor: str, plazo_dias: int, tipo_ruta: str, zonas: Dict[str, str],
-                            filas: List[FilaAprobada], datos, notas: List[str]) -> Ruta:
+                            filas: List[FilaAprobada], datos, notas: List[str],
+                            decisiones_posteriores: Optional[Dict[str, ps.DecisionGerencia]] = None) -> Ruta:
     clientes: List[ClienteRuta] = []
     avisos: List[str] = []
     for f in filas:
-        dec = _decision(f)
+        posterior = (decisiones_posteriores or {}).get(f.codigo)
+        dec = posterior or _decision(f)
         r = ps.evaluar_cliente(f.codigo, datos.facturas.get(f.codigo, []), CORTE_SNAPSHOT, plazo_dias, dec)
-        conc = _conciliar(f, r)
+        conc = _conciliar(f, r, decision_posterior=posterior is not None)
         if not conc["coincide"]:
             avisos.append(f"{f.folder} {f.codigo}: " + "; ".join(conc["diferencias"]))
         clientes.append(ClienteRuta(f.folder, f.zona, f.codigo, datos.nombres.get(f.codigo) or f.nombre,
@@ -129,12 +136,12 @@ RUTAS_APROBADAS = (
     dict(route_id="LAS_VEGAS", nombre="Las Vegas", vendedor="Erick Brizuela", plazo_dias=ps.PLAZO_FORANEA, tipo_ruta="FORANEA",
          archivo="Las_Vegas_Final_Aprobado_Gerencia_09Oct2026.xlsx",
          zonas={"LV": "Las Vegas", "FB": "Flores de Bijao", "PB": "Peña Blanca", "RL": "Río Lindo", "SC": "San Antonio de Cortés"},
-         notas=["Orden de folders: lista física confirmada (24 clientes).", "Etiquetas físicas NO confirmadas como colocadas."]),
+         notas=["Orden de folders: lista física confirmada (24 clientes).", "Estado físico: terminada (24 viñetas colocadas y numeradas)."]),
     dict(route_id="YORO", nombre="Yoro", vendedor="Darwing Milla", plazo_dias=ps.PLAZO_FORANEA, tipo_ruta="FORANEA",
          archivo="Yoro_Semaforo_Aprobacion_Gerencia_09Oct2026.xlsx",
          zonas={"SY": "Santa Rita, Yoro", "MY": "Morazán, Yoro", "PY": "Punta de Ocote", "YT": "Yorito", "YO": "Yoro"},
          notas=["Orden de folders: lista física confirmada (31 clientes: SY 7, MY 7, PY 1, YT 3, YO 13); IARA'S BEAUTY SALON = C10617, sin C10924.",
-                "Colocación física de viñetas PENDIENTE (≈ 4 de 31): la ruta no está terminada."]),
+                "Estado físico: PENDIENTE (≈ 4 de 31 viñetas colocadas); la ruta no está terminada."]),
 )
 
 
@@ -143,11 +150,12 @@ def cargar_rutas_reales(data_dir: Path) -> List[Ruta]:
     filas_por_ruta = {cfg["route_id"]: leer_aprobado(rutas_dir / cfg["archivo"], cfg["zonas"]) for cfg in RUTAS_APROBADAS}
     codigos = {f.codigo for filas in filas_por_ruta.values() for f in filas}
     datos = cargar_consultas(Path(data_dir), codigos)
+    decisiones = cargar_decisiones(Path(data_dir))
     out = []
     for cfg in RUTAS_APROBADAS:
         out.append(construir_ruta_aprobada(
             route_id=cfg["route_id"], nombre=cfg["nombre"], vendedor=cfg["vendedor"], plazo_dias=cfg["plazo_dias"],
-            tipo_ruta=cfg["tipo_ruta"], zonas=cfg["zonas"], filas=filas_por_ruta[cfg["route_id"]], datos=datos, notas=cfg["notas"]))
+            tipo_ruta=cfg["tipo_ruta"], zonas=cfg["zonas"], filas=filas_por_ruta[cfg["route_id"]], datos=datos, notas=cfg["notas"], decisiones_posteriores=decisiones))
     return out
 
 

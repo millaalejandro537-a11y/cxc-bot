@@ -7,7 +7,7 @@ Aplicación web responsiva (gerencia y vendedores) sobre los motores existentes.
 ```
 portal-web/ (React 18 + Vite) ──/api──► cxc_portal/server.py (Python stdlib, 127.0.0.1:8780, solo GET)
                                           ├─ store.py          rutas, clientes en orden de folders, conciliación con el Excel aprobado
-                                          ├─ sap_loader.py     consultas SAP 1/2/3 (08/10/2026) -> facturas + recibos
+                                          ├─ (cxc_bot/sap_exports.py: consultas SAP 1/2/3 -> facturas + recibos + decisiones)
                                           ├─ gerencia_excel.py Excel aprobados (lista/orden, decisiones de gerencia, oráculo de regresión)
                                           ├─ demo.py           ruta SINTÉTICA
                                           └─ bridge.py         puente OPCIONAL a cxc-reporting-core (solo detecta)
@@ -30,11 +30,19 @@ Los datos reales viven en `C:\Users\LTP\Documents\CxC-Datos-Privados\2026-10-08`
 
 ## Reglas del semáforo (`payment_semaphore`)
 
-Últimas 10 facturas (emisión DESC, número DESC) · ≥ 4 facturas en TODO el historial (pagadas y abiertas) o EN_PRUEBA · plazo de la ruta (foránea 60 / local 30) desde la emisión, no el vencimiento SAP · mora = max(0, último recibo contable —o corte si está abierta— − emisión − plazo) · a la media entran pagadas íntegramente respaldadas por recibos y abiertas con mora > 5 · cierres sin cobro integral (nota de crédito, recibos anteriores a la emisión) quedan como excepción · media sin redondear: A ≤ 5, B ≤ 15, C ≤ 60, > 60 candidato a solo contado (nunca rojo sin decisión) · alerta por cada factura con mora > 60 · decisión de gerencia aparte del cálculo (autor, motivo, fecha).
+Últimas 10 facturas (emisión DESC, número DESC) · ≥ 4 facturas en TODO el historial (pagadas y abiertas) o EN_PRUEBA · plazo de la ruta (foránea 60 / local 30) desde la emisión, no el vencimiento SAP · mora = max(0, último recibo contable —o corte si está abierta— − emisión − plazo) · a la media entran pagadas íntegramente respaldadas por recibos y abiertas con mora > 5 · cierres sin cobro integral (nota de crédito, recibos anteriores a la emisión) quedan como excepción · media sin redondear: A ≤ 5, B ≤ 15, C ≤ 60, > 60 candidato a solo contado (nunca rojo sin decisión) · alerta por cada factura con mora > 60, SEPARADA: abiertas = alerta operativa de cobro (con saldo pendiente); pagadas = alerta histórica de comportamiento (nunca cobro pendiente) · decisión de gerencia aparte del cálculo (autor, motivo, fecha).
+
+## Decisiones de gerencia
+
+Se registran en `decisiones_gerencia.json` dentro del directorio privado (los Excel originales NO se modifican). Si una decisión posterior difiere del Excel aprobado (p. ej. Espacio de Belleza y Antonella: candidato → SOLO CONTADO/roja), el portal muestra el cálculo automático, la decisión y la nota de conciliación `explicadas_por_decision_posterior`. El mismo archivo lo usa el generador de rutas.
+
+## Integración con el generador de rutas de CXC BOT
+
+`runner.process_due_routes(..., payment_evidence=<fuente>, payment_decisions=...)` (CLI: `process-due-routes --semaforo-datos DIR`) agrega a cada ruta con `credit_days` definido (`config/routes.json`: Las Vegas y Yoro = 60) el semáforo de sus clientes en `RouteJobResult.semaphore`. Es opcional, no altera el Excel generado y un fallo se reporta en `semaphore_error` sin impedir la publicación. Sin plazo definido no se calcula (no se adivina). Escribir la viñeta/color dentro del Excel operativo queda para una fase posterior.
 
 ## Validación
 
-El motor, alimentado solo con las consultas SAP, reproduce los dos Excel aprobados por gerencia: **55 de 55 clientes** sin diferencias (historial, ventana, pagadas, abiertas, no acreditadas, evaluables, suma de mora, media, alertas, categoría), y el estado/mora/“en promedio” de cada una de las facturas de Las Vegas. Distribución final: Las Vegas 6 A · 3 B · 4 C · 9 en prueba · 2 candidatos; Yoro 11 A · 8 B · 9 C · 2 solo contado · 1 en prueba. Si el Excel y el motor difieren, el portal lo marca por cliente (`conciliacion_gerencia`) y en `/api/fuentes`.
+El motor, alimentado solo con las consultas SAP, reproduce los dos Excel aprobados por gerencia: **55 de 55 clientes** sin diferencias (historial, ventana, pagadas, abiertas, no acreditadas, evaluables, suma de mora, media, alertas, categoría), y el estado/mora/“en promedio” de cada una de las facturas de Las Vegas. Distribución final: Las Vegas 6 A · 3 B · 4 C · 9 en prueba · 2 solo contado (aprobados por gerencia después del Excel); Yoro 11 A · 8 B · 9 C · 2 solo contado · 1 en prueba. Si el Excel y el motor difieren, el portal lo marca por cliente (`conciliacion_gerencia`) y en `/api/fuentes`.
 
 ## Ejecutar
 
@@ -48,6 +56,10 @@ set CXC_DATOS_DIR=C:\Users\LTP\Documents\CxC-Datos-Privados\2026-10-08 && python
 ```
 Python: `C:\Users\LTP\Documents\Codex\environments\cxc-bot-windows\.venv`.
 
+## Seguridad local
+
+El servidor se niega a escuchar fuera de loopback (127.0.0.1/localhost/::1) hasta que exista autenticación real. Solo GET; sin escrituras.
+
 ## Falta para producción
 
-Credencial SELECT y adaptador de lectura (Cosprobell BD) · cortes validados de `cxc-reporting-core` · autenticación y roles reales (el selector es DEMO) · BD propia para visitas/decisiones/usuarios (alertas de visitas hoy es maqueta) · envío automático de reportes · que CXC BOT consuma `payment_semaphore` al generar rutas · numeración por zona y `Actual/Histórico` en CXC BOT · deploy.
+Credencial SELECT y adaptador de lectura (Cosprobell BD) · cortes validados de `cxc-reporting-core` · autenticación y roles reales (el selector es DEMO) · BD propia para visitas/decisiones/usuarios (alertas de visitas hoy es maqueta) · envío automático de reportes · escribir viñeta/semáforo dentro del Excel operativo de CXC BOT · numeración por zona y `Actual/Histórico` en CXC BOT · deploy.

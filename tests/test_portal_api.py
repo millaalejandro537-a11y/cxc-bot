@@ -82,7 +82,7 @@ def test_cliente_expone_calculo_automatico_decision_y_evidencia_por_factura(api)
 def test_demo_cubre_todas_las_clases(api):
     cs = _j(api + "/api/rutas/DEMO/clientes")["clientes"]
     assert {"A", "B", "C", "CANDIDATO_SOLO_CONTADO", "EN_PRUEBA", "REVISION_HUMANA"} <= {c["semaforo"]["calculado"] for c in cs}
-    assert any(c["semaforo"]["alertas"] for c in cs)
+    assert any(c["semaforo"]["alertas_cobro"] for c in cs) and any(c["semaforo"]["alertas_historicas"] for c in cs)
     assert all(c["fuente"]["tipo"] == "SINTETICO_DEMO" for c in cs)
 
 
@@ -94,6 +94,15 @@ def test_prioridades_y_csv(api):
     st, ctype, body = _get(api + "/api/rutas/RX/reporte.csv")
     text = body.decode("utf-8-sig")
     assert st == 200 and ctype.startswith("text/csv") and "C2" in text and "Gerencia" in text and "2026-10-08" in text
+
+
+def test_endpoint_de_alertas_separa_cobro_operativo_de_historico(api):
+    d = _j(api + "/api/alertas")
+    assert set(d) >= {"cobro_operativas", "historicas_comportamiento", "nota"}
+    assert all(a["tipo"] == "COBRO_OPERATIVA" and a["saldo_pendiente"] is not None for a in d["cobro_operativas"])
+    assert all(a["tipo"] == "COMPORTAMIENTO_HISTORICO" and a["saldo_pendiente"] is None for a in d["historicas_comportamiento"])
+    assert d["historicas_comportamiento"]  # la ruta de prueba tiene facturas pagadas con > 60 d
+    assert all(a["ruta"] != "DEMO" for a in d["historicas_comportamiento"] + d["cobro_operativas"])
 
 
 def test_reglas_publicadas(api):
@@ -115,3 +124,10 @@ def test_solo_lectura_y_404(api):
 def test_datos_inexistentes_no_tumban_el_portal(tmp_path):
     store = RouteStore(data_dir=tmp_path / "no_existe")
     assert store.errores and set(store.rutas) == {"DEMO"}
+
+
+def test_el_servidor_rechaza_escuchar_fuera_de_loopback():
+    from cxc_portal.server import run
+    for host in ("0.0.0.0", "192.168.1.10", ""):
+        with pytest.raises(SystemExit, match="loopback"):
+            run(host, 0, None, None)

@@ -246,6 +246,14 @@ def cmd_process_due_routes(args) -> int:
     today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else today_in_timezone(calendar.timezone)
     sap_data_source = LocalMockDataSource(sap_data_path)
 
+    # Semaforo de pago (opcional): solo si se indica un directorio PRIVADO con las consultas SAP exportadas.
+    payment_evidence = None
+    payment_decisions = None
+    if args.semaforo_datos:
+        from .sap_exports import SapExportEvidenceSource, cargar_decisiones
+        payment_evidence = SapExportEvidenceSource(Path(args.semaforo_datos))
+        payment_decisions = cargar_decisiones(Path(args.semaforo_datos))
+
     result = process_due_routes(
         schedule_source=schedule_source,
         catalog=catalog,
@@ -260,6 +268,8 @@ def cmd_process_due_routes(args) -> int:
         config_versions=config_versions,
         environment=args.environment,
         catchup_window_days=catchup_window_days,
+        payment_evidence=payment_evidence,
+        payment_decisions=payment_decisions,
     )
 
     payload = result.to_dict()
@@ -362,6 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_proc.add_argument(
         "--catchup-window-days", type=int,
         help="Maximo de dias de atraso a procesar automaticamente (sobreescribe scheduling.json; sin limite si no se da).",
+    )
+    p_proc.add_argument(
+        "--semaforo-datos", metavar="DIR",
+        help="Directorio PRIVADO (fuera de Git) con 02_SAP_08Oct2026/ y, opcional, decisiones_gerencia.json: agrega el semaforo de "
+             "pago (cxc_bot.payment_semaphore) al resultado de las rutas con credit_days definido. No altera el Excel generado.",
     )
     p_proc.set_defaults(func=cmd_process_due_routes)
 

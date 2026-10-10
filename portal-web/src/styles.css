@@ -59,3 +59,5 @@ footer { margin-top: 28px; color: var(--muted); font-size: 13px; border-top: 1px
 .okmsg { color: var(--verde); }
 tr.detalle td { border-bottom: 1px solid var(--line); padding-top: 0; }
 tr.detalle { background: var(--bg); }
+
+.hist { color: var(--muted); }

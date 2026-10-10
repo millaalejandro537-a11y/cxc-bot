@@ -78,6 +78,9 @@ class RouteConfig:
     # columnas) pero las deja en blanco en cada mes nuevo, igual que
     # Observacion -- no se inventa contenido para una columna sin fuente.
     passthrough_cols: List[str] = field(default_factory=list)
+    # Plazo de credito operativo de la ruta (foranea 60 / local 30). None = sin definir: el semaforo de pago NO se
+    # calcula para esa ruta (no se adivina el plazo). Lo consume cxc_bot.payment_semaphore.
+    credit_days: Optional[int] = None
 
     def name_formula_for(self, row: int) -> str:
         code_ref = f"{self.code_col}{row}"
