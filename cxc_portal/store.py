@@ -1,31 +1,26 @@
-"""Rutas del portal (solo lectura): clientes en orden de folders + evaluacion con el motor unico `cxc_bot.payment_semaphore`.
+"""Vistas de ruta del portal: catalogo propio (BD de estado) + evidencia de la fuente + motor unico `payment_semaphore`.
 
-Los datos reales (consultas SAP 08/10/2026 y Excel aprobados por gerencia) viven FUERA de Git, en un directorio privado
-indicado por --datos o la variable CXC_DATOS_DIR. Sin ese directorio solo se carga la ruta DEMO sintetica.
-
-Tipos de fuente: SNAPSHOT_SAP_HISTORICO (consultas exportadas, NO en vivo), SINTETICO_DEMO y EN_VIVO (aun inexistente).
+`PortalServicio` es la unica puerta de lectura/escritura de negocio de la aplicacion; la capa HTTP solo valida permisos y
+serializa. El semaforo se calcula SIEMPRE con `cxc_bot.payment_semaphore` (sin reglas aqui). Las decisiones de gerencia
+vigentes (BD propia) se aplican como override y se exportan a `decisiones_gerencia.json` para que CXC BOT las use.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import threading
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from cxc_bot import payment_semaphore as ps
 
-from .gerencia_excel import FilaAprobada, leer_aprobado
-from cxc_bot.sap_exports import cargar_consultas, cargar_decisiones
+from .estado import ErrorNegocio, Estado
+from .fuentes import FuenteDatos
 
-FUENTE_SNAPSHOT_SAP = "SNAPSHOT_SAP_HISTORICO"
-FUENTE_SINTETICO = "SINTETICO_DEMO"
-FUENTE_EN_VIVO = "EN_VIVO"
-
-CORTE_SNAPSHOT = date(2026, 10, 8)
-FECHA_DECISIONES = "2026-10-09"
 ENV_DATOS = "CXC_DATOS_DIR"
+ENV_ESTADO = "CXC_ESTADO_DIR"
 
 
 @dataclass
@@ -36,7 +31,6 @@ class ClienteRuta:
     nombre: str
     saldo: float
     resultado: ps.ResultadoCliente
-    conciliacion: Optional[dict] = None   # cotejo contra el Excel aprobado por gerencia (si existe)
 
 
 @dataclass
@@ -49,11 +43,9 @@ class Ruta:
     fuente: dict
     zonas: List[dict]
     clientes: List[ClienteRuta]
+    estado_fisico: str = ""
+    notas: str = ""
     avisos: List[str] = field(default_factory=list)
-
-    @property
-    def es_en_vivo(self) -> bool:
-        return self.fuente.get("tipo") == FUENTE_EN_VIVO
 
     def resumen(self) -> dict:
         calc: Dict[str, int] = {}
@@ -64,131 +56,143 @@ class Ruta:
         return {
             "route_id": self.route_id, "nombre": self.nombre, "vendedor": self.vendedor, "tipo_ruta": self.tipo_ruta,
             "plazo_dias": self.plazo_dias, "fuente": self.fuente, "clientes": len(self.clientes),
-            "saldo_total": round(sum(c.saldo for c in self.clientes), 2),
-            "clasificacion": final, "clasificacion_calculada": calc,
+            "saldo_total": round(sum(c.saldo for c in self.clientes), 2), "clasificacion": final, "clasificacion_calculada": calc,
             "overrides_gerencia": sum(1 for c in self.clientes if c.resultado.decision_gerencia),
             "alertas_cobro": sum(len(c.resultado.alertas_cobro) for c in self.clientes),
             "alertas_historicas": sum(len(c.resultado.alertas_historicas) for c in self.clientes),
-            "avisos": self.avisos,
+            "estado_fisico": self.estado_fisico, "notas": self.notas, "avisos": self.avisos,
         }
 
     def cliente_dict(self, c: ClienteRuta) -> dict:
         s = c.resultado.to_dict()
         s["etiqueta_calculada"] = ps.ETIQUETA[c.resultado.calculado]
-        return {"folder": c.folder, "zona": c.zona, "codigo": c.codigo, "nombre": c.nombre, "saldo": c.saldo,
-                "ruta": self.route_id, "vendedor": self.vendedor, "plazo_dias": self.plazo_dias, "fuente": self.fuente,
-                "conciliacion_gerencia": c.conciliacion, "semaforo": s}
+        return {"folder": c.folder, "zona": c.zona, "codigo": c.codigo, "nombre": c.nombre, "saldo": c.saldo, "ruta": self.route_id,
+                "vendedor": self.vendedor, "plazo_dias": self.plazo_dias, "fuente": self.fuente, "semaforo": s}
 
 
-def _decision(f: FilaAprobada) -> Optional[ps.DecisionGerencia]:
-    if not f.es_override:
-        return None
-    return ps.DecisionGerencia(clasificacion_final=f.final, motivo=f.motivo_gerencia or "Decisión de gerencia (motivo no informado)",
-                               actor="Gerencia", fecha=FECHA_DECISIONES)
+def decision_a_motor(d: dict) -> ps.DecisionGerencia:
+    return ps.DecisionGerencia(clasificacion_final=d["clasificacion_final"], motivo=d["motivo"], actor=d["actor"], fecha=d["fecha"])
 
 
-def _conciliar(f: FilaAprobada, r: ps.ResultadoCliente, decision_posterior: bool = False) -> dict:
-    """Cotejo motor Python vs Excel aprobado: los conteos y la media deben coincidir; si no, se ve en el portal."""
-    difs = []
-    pares = [("historial", f.historial, r.historial_total), ("ventana", f.ventana, r.en_ventana), ("pagadas", f.pagadas, r.pagadas),
-             ("abiertas", f.abiertas, r.abiertas), ("no acreditadas", f.no_acreditadas, r.no_acreditadas),
-             ("evaluables", f.evaluables, r.evaluables), ("suma de mora", f.suma_mora, r.suma_mora), ("alertas > 60", f.alertas, len(r.alertas))]
-    for nombre, esp, got in pares:
-        if esp is not None and int(esp) != int(got):
-            difs.append(f"{nombre}: Excel {esp} vs motor {got}")
-    if f.calculado != r.calculado:
-        difs.append(f"clasificación calculada: Excel {f.calculado} vs motor {r.calculado}")
-    explicadas = []
-    if f.final != r.final:
-        if decision_posterior:  # el Excel original NO se altera: la decision gerencial posterior se registra aparte
-            explicadas.append(f"clasificación final: Excel aprobado {f.final}; decisión posterior de gerencia {r.final} (el Excel original se conserva sin cambios)")
-        else:
-            difs.append(f"clasificación final: Excel {f.final} vs portal {r.final}")
-    return {"coincide": not difs, "diferencias": difs, "explicadas_por_decision_posterior": explicadas}
+class PortalServicio:
+    def __init__(self, estado: Estado, fuente: Optional[FuenteDatos], estado_dir: Path, reporting=None, data_dir: Optional[Path] = None):
+        self.estado, self.fuente, self.estado_dir = estado, fuente, Path(estado_dir)
+        self.reporting, self.data_dir = reporting, (Path(data_dir) if data_dir else None)
+        self._cache: Optional[Dict[str, Ruta]] = None
+        self._lock = threading.RLock()
 
+    # ------------------------------------------------------------------ fuente
+    def info_fuente(self) -> dict:
+        if self.fuente is None:
+            return {"tipo": "SIN_FUENTE", "en_vivo": False, "etiqueta": "Sin fuente de datos cargada (solo catálogo)", "fecha_corte": None,
+                    "frescura": {"vigente": False, "motivo": "No hay snapshot ni fuente en vivo configurados."}}
+        return {"tipo": self.fuente.tipo, "en_vivo": self.fuente.en_vivo, "etiqueta": self.fuente.etiqueta,
+                "fecha_corte": self.fuente.fecha_corte.isoformat(), "frescura": self.fuente.frescura()}
 
-def construir_ruta_aprobada(*, route_id: str, nombre: str, vendedor: str, plazo_dias: int, tipo_ruta: str, zonas: Dict[str, str],
-                            filas: List[FilaAprobada], datos, notas: List[str],
-                            decisiones_posteriores: Optional[Dict[str, ps.DecisionGerencia]] = None) -> Ruta:
-    clientes: List[ClienteRuta] = []
-    avisos: List[str] = []
-    for f in filas:
-        posterior = (decisiones_posteriores or {}).get(f.codigo)
-        dec = posterior or _decision(f)
-        r = ps.evaluar_cliente(f.codigo, datos.facturas.get(f.codigo, []), CORTE_SNAPSHOT, plazo_dias, dec)
-        conc = _conciliar(f, r, decision_posterior=posterior is not None)
-        if not conc["coincide"]:
-            avisos.append(f"{f.folder} {f.codigo}: " + "; ".join(conc["diferencias"]))
-        clientes.append(ClienteRuta(f.folder, f.zona, f.codigo, datos.nombres.get(f.codigo) or f.nombre,
-                                    datos.saldo_abierto.get(f.codigo, 0.0), r, conc))
-    fuente = {
-        "tipo": FUENTE_SNAPSHOT_SAP, "fecha_corte": CORTE_SNAPSHOT.isoformat(), "en_vivo": False,
-        "etiqueta": "Snapshot SAP 08/10/2026 (consultas exportadas) — NO es dato en vivo",
-        "notas": ["Facturas, recibos y aplicaciones: consultas SAP 1, 2 y 3 exportadas el 08/10/2026.",
-                  "Saldo = facturas abiertas de la consulta 1 al 08/10/2026 (coincide con el saldo de la lista de ruta).",
-                  "Decisiones de gerencia reportadas el 09/10/2026; se muestran junto al cálculo automático."] + notas,
-    }
-    return Ruta(route_id, nombre, vendedor, tipo_ruta, plazo_dias, fuente,
-                [{"prefijo": k, "nombre": v} for k, v in zonas.items()], clientes, avisos)
+    def capacidades(self) -> dict:
+        """Que se puede usar hoy y que queda bloqueado hasta tener datos vigentes y autorización."""
+        vivo = bool(self.fuente and self.fuente.en_vivo)
+        return {
+            "sin_sap_vivo": ["Administrar vendedores, rutas, zonas, clientes y orden de folders", "Alta de rutas nuevas sin cambiar código",
+                             "Semáforo, facturas y alertas sobre el snapshot (con fecha de corte)", "Decisiones y excepciones de gerencia (con trazabilidad)",
+                             "Registro de visitas y su trazabilidad", "Reportes gerenciales (cxc-reporting-core) sobre el snapshot, marcados NO VALIDADOS",
+                             "Usuarios, roles y auditoría"],
+            "bloqueado_hasta_sap_vivo": [] if vivo else [
+                "Saldos y facturas actuales (hoy: snapshot del 08/10/2026)", "Alertas de cobro que reflejen la realidad de hoy",
+                "Prioridades de cobro confiables", "Cortes VALIDADOS de cartera (requiere conciliación contable)",
+                "Generar rutas con saldos vigentes para uso operativo"],
+            "en_vivo": vivo}
 
+    # ------------------------------------------------------------------ rutas evaluadas
+    def invalidar(self) -> None:
+        with self._lock:
+            self._cache = None
 
-RUTAS_APROBADAS = (
-    dict(route_id="LAS_VEGAS", nombre="Las Vegas", vendedor="Erick Brizuela", plazo_dias=ps.PLAZO_FORANEA, tipo_ruta="FORANEA",
-         archivo="Las_Vegas_Final_Aprobado_Gerencia_09Oct2026.xlsx",
-         zonas={"LV": "Las Vegas", "FB": "Flores de Bijao", "PB": "Peña Blanca", "RL": "Río Lindo", "SC": "San Antonio de Cortés"},
-         notas=["Orden de folders: lista física confirmada (24 clientes).", "Estado físico: terminada (24 viñetas colocadas y numeradas)."]),
-    dict(route_id="YORO", nombre="Yoro", vendedor="Darwing Milla", plazo_dias=ps.PLAZO_FORANEA, tipo_ruta="FORANEA",
-         archivo="Yoro_Semaforo_Aprobacion_Gerencia_09Oct2026.xlsx",
-         zonas={"SY": "Santa Rita, Yoro", "MY": "Morazán, Yoro", "PY": "Punta de Ocote", "YT": "Yorito", "YO": "Yoro"},
-         notas=["Orden de folders: lista física confirmada (31 clientes: SY 7, MY 7, PY 1, YT 3, YO 13); IARA'S BEAUTY SALON = C10617, sin C10924.",
-                "Estado físico: PENDIENTE (≈ 4 de 31 viñetas colocadas); la ruta no está terminada."]),
-)
+    def _evaluar(self) -> Dict[str, Ruta]:
+        decisiones = {c: decision_a_motor(d) for c, d in self.estado.decisiones_vigentes().items()}
+        info = self.info_fuente()
+        fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": []}
+        usable = self.fuente is not None and not self.fuente.en_vivo
+        out: Dict[str, Ruta] = {}
+        for r in self.estado.listar_rutas():
+            codigos = [c["codigo"] for c in r["clientes"]]
+            resultados = ps.evaluar_ruta(codigos, self.fuente, r["plazo_dias"], decisiones) if usable else {}
+            clientes = []
+            for c in r["clientes"]:
+                res = resultados.get(c["codigo"])
+                if res is None:  # sin fuente: no se infiere nada
+                    res = ps.ResultadoCliente(c["codigo"], ps.SIN_DATOS, ps.SIN_DATOS, None, 0, 0, 0, 0, 0, 0, 0, (), (),
+                                              ("No hay fuente de datos cargada: no se calcula ni se infiere ninguna clasificación.",), (), None)
+                saldo = self.fuente.saldo_abierto(c["codigo"]) if usable else 0.0
+                nombre = (self.fuente.nombre_cliente(c["codigo"]) if usable else None) or c["nombre"]
+                clientes.append(ClienteRuta(c["folder"], c["zona"], c["codigo"], nombre, saldo, res))
+            out[r["route_id"]] = Ruta(r["route_id"], r["nombre"], r["vendedor"], r["tipo_ruta"], r["plazo_dias"], fuente_meta, r["zonas"], clientes,
+                                      r["estado_fisico"], r["notas"])
+        return out
 
-
-def cargar_rutas_reales(data_dir: Path) -> List[Ruta]:
-    rutas_dir = Path(data_dir) / "01_Rutas"
-    filas_por_ruta = {cfg["route_id"]: leer_aprobado(rutas_dir / cfg["archivo"], cfg["zonas"]) for cfg in RUTAS_APROBADAS}
-    codigos = {f.codigo for filas in filas_por_ruta.values() for f in filas}
-    datos = cargar_consultas(Path(data_dir), codigos)
-    decisiones = cargar_decisiones(Path(data_dir))
-    out = []
-    for cfg in RUTAS_APROBADAS:
-        out.append(construir_ruta_aprobada(
-            route_id=cfg["route_id"], nombre=cfg["nombre"], vendedor=cfg["vendedor"], plazo_dias=cfg["plazo_dias"],
-            tipo_ruta=cfg["tipo_ruta"], zonas=cfg["zonas"], filas=filas_por_ruta[cfg["route_id"]], datos=datos, notas=cfg["notas"], decisiones_posteriores=decisiones))
-    return out
-
-
-class RouteStore:
-    """Rutas cargadas. `rutas` permite inyectar rutas ya construidas (pruebas); `data_dir` carga las reales."""
-
-    def __init__(self, data_dir: Optional[Path] = None, rutas: Optional[List[Ruta]] = None, include_demo: bool = True):
-        self.rutas: Dict[str, Ruta] = {}
-        self.errores: List[str] = []
-        self.data_dir = Path(data_dir) if data_dir else (Path(os.environ[ENV_DATOS]) if os.environ.get(ENV_DATOS) else None)
-        if rutas is not None:
-            for r in rutas:
-                self.rutas[r.route_id] = r
-        elif self.data_dir:
-            try:
-                for r in cargar_rutas_reales(self.data_dir):
-                    self.rutas[r.route_id] = r
-            except Exception as e:  # noqa: BLE001 - el portal arranca igual; el error se ve en /api/fuentes
-                self.errores.append(f"No se pudieron cargar los datos de {self.data_dir.name}: {e}")
-        if include_demo:
-            from .demo import demo_ruta
-            self.rutas.setdefault("DEMO", demo_ruta())
-
-    def listar(self) -> List[dict]:
-        return [r.resumen() for r in self.rutas.values()]
+    def rutas(self) -> Dict[str, Ruta]:
+        with self._lock:
+            if self._cache is None:
+                self._cache = self._evaluar()
+            return self._cache
 
     def ruta(self, route_id: str) -> Optional[Ruta]:
-        return self.rutas.get(route_id)
+        return self.rutas().get(route_id)
 
     def buscar_cliente(self, codigo: str):
         k = codigo.strip().upper()
-        for r in self.rutas.values():
+        for r in self.rutas().values():
             for c in r.clientes:
                 if c.codigo.upper() == k:
                     return r, c
         return None
+
+    # ------------------------------------------------------------------ decisiones
+    def registrar_decision(self, actor: dict, codigo: str, final: str, motivo: str) -> dict:
+        hit = self.buscar_cliente(codigo)
+        if not hit:
+            raise ErrorNegocio("El cliente no pertenece a ninguna ruta.", 404)
+        r, c = hit
+        s = c.resultado
+        d = self.estado.registrar_decision(actor, c.codigo, final, motivo, route_id=r.route_id, calculado=s.calculado, promedio=s.promedio_mora,
+                                           fecha_corte=r.fuente.get("fecha_corte"))
+        self.invalidar()
+        self.exportar_decisiones()
+        return d
+
+    def anular_decision(self, actor: dict, codigo: str, motivo: str) -> dict:
+        d = self.estado.anular_decision(actor, codigo, motivo)
+        self.invalidar()
+        self.exportar_decisiones()
+        return d
+
+    def exportar_decisiones(self) -> Optional[Path]:
+        """Exporta las decisiones VIGENTES a decisiones_gerencia.json (lo consume el generador de rutas de CXC BOT). Escritura atomica."""
+        destino = self.data_dir / "decisiones_gerencia.json" if self.data_dir else None
+        if destino is None or not destino.parent.is_dir():
+            return None
+        data = {"_nota": "Exportado desde la BD del portal (fuente de verdad). No editar a mano."}
+        for cod, d in sorted(self.estado.decisiones_vigentes().items()):
+            data[cod] = {"clasificacion_final": d["clasificacion_final"], "motivo": d["motivo"], "actor": d["actor"], "fecha": d["fecha"]}
+        tmp = destino.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, destino)
+        return destino
+
+    # ------------------------------------------------------------------ importacion de rutas desde Excel (solo lectura del archivo)
+    def importar_ruta_desde_excel(self, actor: dict, archivo: str, route_id: str, nombre: str, vendedor: str, tipo_ruta: str,
+                                  plazo_dias: Optional[int] = None, zonas: Optional[Dict[str, str]] = None) -> dict:
+        """Lee la lista (Folder/#, Codigo, Nombre) de un Excel que esté DENTRO de <datos>/01_Rutas y crea/actualiza la ruta. No modifica el Excel."""
+        if self.data_dir is None:
+            raise ErrorNegocio("No hay directorio de datos configurado.", 400)
+        base = (self.data_dir / "01_Rutas").resolve()
+        origen = (base / archivo).resolve()
+        if base not in origen.parents or origen.suffix.lower() != ".xlsx" or not origen.is_file():
+            raise ErrorNegocio("Archivo no válido: debe ser un .xlsx dentro de 01_Rutas del directorio de datos.", 400)
+        from .rutas_excel import leer_lista_ruta
+        filas = leer_lista_ruta(origen)
+        if not filas:
+            raise ErrorNegocio("No se encontraron clientes en el archivo (se espera encabezado con Codigo y Nombre).", 400)
+        r = self.estado.guardar_ruta(actor, route_id, nombre, vendedor, tipo_ruta, plazo_dias, zonas=zonas or {}, clientes=filas)
+        self.invalidar()
+        return r

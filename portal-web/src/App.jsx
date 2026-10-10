@@ -1,61 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
-const api = async (path) => {
-  const r = await fetch(`/api${path}`)
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`)
-  return r.json()
-}
+import { api, post, setCsrf } from './api.js'
+import { CLASES, Dot, ESTADO, FuenteBadge, Semaforo, fdate, money } from './ui.jsx'
+import { Admin, Auditoria } from './Admin.jsx'
+import { Reportes } from './Reportes.jsx'
+import { Visitas } from './Visitas.jsx'
+import { DecisionPanel } from './Decision.jsx'
 
-const money = (n) => `L ${Number(n || 0).toLocaleString('es-HN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const fdate = (s) => (s ? s.split('-').reverse().join('/') : '—')
-
-// Color de la viñeta por clasificación final (el cálculo lo hace el backend; aquí solo se presenta)
-const DOT = {
-  VERDE: 'var(--verde)', AZUL: 'var(--azul)', AMARILLO: 'var(--amarillo)', ROJO: 'var(--rojo)',
-  BLANCO: 'var(--blanco)', PENDIENTE_GERENCIA: 'var(--pend)', SIN_DATOS: 'var(--sin)',
-}
-const FUENTE_TXT = {
-  SNAPSHOT_SAP_HISTORICO: 'SNAPSHOT SAP HISTÓRICO',
-  HISTORICO_REFERENCIA: 'HISTÓRICO · REFERENCIA',
-  SINTETICO_DEMO: 'SINTÉTICO · DEMO',
-  EN_VIVO: 'EN VIVO',
-}
-const ESTADO = { PAGADA: 'Pagada', ABIERTA: 'Abierta', CERRADA_NO_ACREDITADA: 'Cerrada sin cobro acreditado' }
-const CLASES = [
-  ['A', 'Excelente (A)'], ['B', 'Bueno (B)'], ['C', 'Regular (C)'], ['SOLO_CONTADO', 'Solo contado'],
-  ['CANDIDATO_SOLO_CONTADO', 'Candidato a contado'], ['REVISION_HUMANA', 'Revisión humana'],
-  ['EN_PRUEBA', 'En prueba'], ['SIN_DATOS', 'Sin datos'],
-]
-
-function Dot({ color, title }) {
-  return <span className="dot" style={{ background: DOT[color] || DOT.SIN_DATOS }} title={title} aria-label={title} />
-}
-
-function FuenteBadge({ fuente }) {
-  const live = fuente.tipo === 'EN_VIVO'
-  return (
-    <span className={`badge ${live ? 'live' : 'hist'}`} title={fuente.etiqueta}>
-      {FUENTE_TXT[fuente.tipo] || fuente.tipo} · corte {fdate(fuente.fecha_corte)}
-    </span>
-  )
-}
-
-function Semaforo({ s }) {
-  const cambia = s.calculado !== s.final
-  return (
-    <span className="sem">
-      <Dot color={s.color_final} title={s.etiqueta_final} />
-      <span>{s.etiqueta_final}</span>
-      {cambia && <small className="muted"> (automático: {s.etiqueta_calculada})</small>}
-    </span>
-  )
-}
-
-function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente }) {
+function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente, capacidades }) {
   return (
     <>
       <section className="aviso">
         <strong>Datos históricos, no en vivo.</strong> {enVivo.motivo} Cada ruta indica su fuente y fecha de corte.
+        {capacidades?.bloqueado_hasta_sap_vivo?.length > 0 && (
+          <details><summary>Qué está bloqueado hasta tener SAP en vivo</summary><ul className="notas">{capacidades.bloqueado_hasta_sap_vivo.map((x) => <li key={x}>{x}</li>)}</ul></details>
+        )}
       </section>
       <div className="grid">
         {rutas.map((r) => (
@@ -76,12 +35,12 @@ function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente }) {
               {r.overrides_gerencia > 0 && `${r.overrides_gerencia} decisión(es) de gerencia sobre el cálculo automático · `}
               {r.alertas_cobro} alerta(s) de cobro (abiertas &gt; 60 d) · {r.alertas_historicas} histórica(s) de comportamiento (pagadas &gt; 60 d)
             </p>
-            {r.avisos.length > 0 && <p className="error small">⚠ {r.avisos.length} diferencia(s) de conciliación con el Excel aprobado (ver detalle del cliente)</p>}
+            {r.estado_fisico && <p className="muted small">{r.estado_fisico}</p>}
             <button onClick={() => abrirRuta(r.route_id)}>Ver ruta</button>
           </article>
         ))}
       </div>
-      <h3>Mayores saldos del snapshot (top 10)</h3>
+      {prioridades.length > 0 && <h3>Mayores saldos del snapshot (top 10)</h3>}
       <p className="muted small">Referencia sobre el snapshot cargado; no es cartera en vivo ni prioridad de cobro validada.</p>
       <div className="tablewrap">
         <table>
@@ -167,10 +126,11 @@ function Ruta({ id, abrirCliente, volver }) {
   )
 }
 
-function Cliente({ codigo, volver }) {
+function Cliente({ codigo, volver, user }) {
   const [c, setC] = useState(null)
   const [err, setErr] = useState(null)
-  useEffect(() => { api(`/clientes/${codigo}`).then(setC).catch((e) => setErr(e.message)) }, [codigo])
+  const cargar = () => api(`/clientes/${codigo}`).then(setC).catch((e) => setErr(e.message))
+  useEffect(() => { cargar() }, [codigo])
   if (err) return <p className="error">{err}</p>
   if (!c) return <p>Cargando…</p>
   const s = c.semaforo
@@ -196,9 +156,6 @@ function Cliente({ codigo, volver }) {
             </div>
           )}
           <p className="muted small">Calculada automáticamente por el motor Python a partir de las consultas SAP del {fdate(c.fuente.fecha_corte)}.</p>
-          {c.conciliacion_gerencia && (c.conciliacion_gerencia.coincide
-            ? <p className="small okmsg">✓ Coincide con el Excel aprobado por gerencia.{c.conciliacion_gerencia.explicadas_por_decision_posterior?.length > 0 && <span className="muted"> Nota: {c.conciliacion_gerencia.explicadas_por_decision_posterior.join('; ')}.</span>}</p>
-            : <p className="error small">⚠ Difiere del Excel aprobado: {c.conciliacion_gerencia.diferencias.join('; ')}</p>)}
         </article>
         <article className="card">
           <h3>Saldo</h3>
@@ -206,6 +163,7 @@ function Cliente({ codigo, volver }) {
           <p className="muted small">Saldo del snapshot ({fdate(c.fuente.fecha_corte)}); no es saldo en vivo.</p>
         </article>
       </div>
+      <DecisionPanel cliente={c} rol={user.rol} recargar={cargar} />
       <h3>¿Por qué este semáforo?</h3>
       <ul className="notas">{s.explicacion.map((e) => <li key={e}>{e}</li>)}</ul>
       {s.alertas_cobro.length > 0 && (<><h3>Alertas de cobro (facturas abiertas &gt; 60 días)</h3><ul className="alertas">{s.alertas_cobro.map((a) => <li key={a.numero}>{a.texto} Saldo pendiente: {money(a.saldo_pendiente)}.</li>)}</ul></>)}
@@ -239,6 +197,10 @@ function Cliente({ codigo, volver }) {
             </tbody>
           </table>
         </div>
+      )}
+      <h3>Visitas registradas</h3>
+      {(c.visitas || []).length === 0 ? <p className="muted">Sin visitas registradas para este cliente.</p> : (
+        <ul className="notas">{c.visitas.map((v) => <li key={v.id}>{fdate(v.fecha_salida)} · {v.estado.replaceAll('_', ' ')}{v.motivo ? ` — ${v.motivo}` : ''} ({v.registrada_por_usuario})</li>)}</ul>
       )}
     </>
   )
@@ -294,54 +256,115 @@ function Alertas({ rutas, abrirCliente }) {
   )
 }
 
+function Login({ onLogin }) {
+  const [u, setU] = useState('')
+  const [p, setP] = useState('')
+  const [err, setErr] = useState(null)
+  const [ocupado, setOcupado] = useState(false)
+  const enviar = async (e) => {
+    e.preventDefault(); setErr(null); setOcupado(true)
+    try { const d = await post('/auth/login', { usuario: u, password: p }); setCsrf(d.csrf); setP(''); onLogin(d.usuario) } catch (x) { setErr(x.message) }
+    setOcupado(false)
+  }
+  return (
+    <div className="login">
+      <h1>Portal CxC</h1>
+      <p className="muted">Distribuciones Cosprobell · Cuentas por cobrar</p>
+      <form onSubmit={enviar} className="form">
+        <label>Usuario<input value={u} onChange={(e) => setU(e.target.value)} autoComplete="username" autoFocus required /></label>
+        <label>Contraseña<input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" required /></label>
+        <button type="submit" disabled={ocupado}>Entrar</button>
+        {err && <p className="error">{err}</p>}
+      </form>
+      <p className="muted small">Acceso solo para personal autorizado. La actividad queda registrada.</p>
+    </div>
+  )
+}
+
+function CambiarClave({ user, onListo }) {
+  const [a, setA] = useState('')
+  const [n, setN] = useState('')
+  const [msg, setMsg] = useState(null)
+  const enviar = async (e) => {
+    e.preventDefault(); setMsg(null)
+    try { await post('/auth/password', { actual: a, nueva: n }); setCsrf(null); onListo() } catch (x) { setMsg(x.message) }
+  }
+  return (
+    <div className="login">
+      <h2>Cambie su contraseña</h2>
+      <p className="muted">{user.usuario}: por seguridad debe definir una contraseña propia (mínimo 12 caracteres, 3 de 4 clases: minúsculas, mayúsculas, dígitos, símbolos).</p>
+      <form onSubmit={enviar} className="form">
+        <label>Contraseña actual<input type="password" value={a} onChange={(e) => setA(e.target.value)} autoComplete="current-password" required /></label>
+        <label>Nueva contraseña<input type="password" value={n} onChange={(e) => setN(e.target.value)} autoComplete="new-password" required /></label>
+        <button type="submit">Cambiar</button>
+        {msg && <p className="error">{msg}</p>}
+      </form>
+    </div>
+  )
+}
+
+const ROL_TXT = { admin: 'Administrador', gerencia: 'Gerencia', vendedor: 'Vendedor' }
+
 export default function App() {
-  const [rol, setRol] = useState('GERENCIA')
+  const [user, setUser] = useState(undefined) // undefined = comprobando sesión; null = sin sesión
   const [vista, setVista] = useState({ t: 'panel' })
   const [atras, setAtras] = useState([])
   const [rutas, setRutas] = useState([])
-  const [enVivo, setEnVivo] = useState({ motivo: '' })
+  const [fuente, setFuente] = useState(null)
   const [prior, setPrior] = useState([])
   const [err, setErr] = useState(null)
 
   useEffect(() => {
-    api('/rutas').then((d) => { setRutas(d.rutas); setEnVivo(d.en_vivo) }).catch((e) => setErr(e.message))
-    api('/prioridades?n=10').then((d) => setPrior(d.prioridades)).catch(() => {})
+    api('/auth/me').then((d) => { setCsrf(d.csrf); setUser(d.usuario) }).catch(() => setUser(null))
+    const f = () => { setUser(null); setCsrf(null) }
+    window.addEventListener('cxc-sesion-expirada', f)
+    return () => window.removeEventListener('cxc-sesion-expirada', f)
   }, [])
 
-  const vendedores = useMemo(() => [...new Set(rutas.map((r) => r.vendedor))], [rutas])
-  const [vend, setVend] = useState('')
-  const visibles = rol === 'GERENCIA' ? rutas : rutas.filter((r) => r.vendedor === (vend || vendedores[0]))
+  useEffect(() => {
+    if (!user || user.debe_cambiar_password) return
+    api('/rutas').then((d) => setRutas(d.rutas)).catch((e) => setErr(e.message))
+    api('/fuente').then(setFuente).catch(() => {})
+    if (['admin', 'gerencia'].includes(user.rol)) api('/prioridades?n=10').then((d) => setPrior(d.prioridades)).catch(() => {})
+  }, [user])
+
   const ir = (v) => { setAtras((a) => [...a, vista]); setVista(v) }
   const volver = () => { setVista(atras.at(-1) || { t: 'panel' }); setAtras((a) => a.slice(0, -1)) }
+  const salir = async () => { try { await post('/auth/logout') } catch (e) { /* ya sin sesión */ } setCsrf(null); setUser(null); setVista({ t: 'panel' }); setAtras([]) }
+  const raiz = (t) => { setAtras([]); setVista({ t }) }
 
+  if (user === undefined) return <p className="login">Cargando…</p>
+  if (user === null) return <Login onLogin={setUser} />
+  if (user.debe_cambiar_password) return <CambiarClave user={user} onListo={() => setUser(null)} />
+
+  const glob = ['admin', 'gerencia'].includes(user.rol)
+  const enVivo = fuente?.fuente || { frescura: { motivo: '' } }
   return (
     <div className="app">
       <header className="top">
-        <div className="brand" onClick={() => { setAtras([]); setVista({ t: 'panel' }) }}>Portal CxC <small>MVP</small></div>
+        <div className="brand" onClick={() => raiz('panel')}>Portal CxC</div>
         <nav>
-          <button className={vista.t === 'panel' ? 'on' : ''} onClick={() => { setAtras([]); setVista({ t: 'panel' }) }}>Panel</button>
-          <button className={vista.t === 'alertas' ? 'on' : ''} onClick={() => ir({ t: 'alertas' })}>Alertas</button>
+          <button className={vista.t === 'panel' ? 'on' : ''} onClick={() => raiz('panel')}>Panel</button>
+          <button className={vista.t === 'alertas' ? 'on' : ''} onClick={() => raiz('alertas')}>Alertas</button>
+          <button className={vista.t === 'visitas' ? 'on' : ''} onClick={() => raiz('visitas')}>Visitas</button>
+          {glob && <button className={vista.t === 'reportes' ? 'on' : ''} onClick={() => raiz('reportes')}>Reportes</button>}
+          {user.rol === 'admin' && <button className={vista.t === 'admin' ? 'on' : ''} onClick={() => raiz('admin')}>Administración</button>}
+          {glob && <button className={vista.t === 'auditoria' ? 'on' : ''} onClick={() => raiz('auditoria')}>Auditoría</button>}
         </nav>
-        <div className="rol">
-          <span className="badge maqueta" title="Selector de rol solo para demostración local; no es autenticación">DEMO</span>
-          <select value={rol} onChange={(e) => setRol(e.target.value)} aria-label="Rol (demo)">
-            <option value="GERENCIA">Gerencia</option><option value="VENDEDOR">Vendedor</option>
-          </select>
-          {rol === 'VENDEDOR' && (
-            <select value={vend || vendedores[0] || ''} onChange={(e) => setVend(e.target.value)} aria-label="Vendedor (demo)">
-              {vendedores.map((v) => <option key={v}>{v}</option>)}
-            </select>
-          )}
-        </div>
+        <div className="rol"><span className="badge maqueta" title={user.usuario}>{ROL_TXT[user.rol]}{user.vendedor ? ` · ${user.vendedor}` : ''}</span><button className="sec" onClick={salir}>Salir</button></div>
       </header>
       <main>
-        {err && <p className="error">No se pudo contactar la API: {err}. Inicia el backend: <code>python -m cxc_portal.server</code></p>}
-        {vista.t === 'panel' && <Panel rutas={visibles} enVivo={enVivo} prioridades={prior.filter((p) => visibles.some((r) => r.route_id === p.ruta))} abrirRuta={(id) => ir({ t: 'ruta', id })} abrirCliente={(c) => ir({ t: 'cliente', c })} />}
+        {err && <p className="error">No se pudo contactar la API: {err}</p>}
+        {vista.t === 'panel' && <Panel rutas={rutas} enVivo={{ motivo: enVivo.frescura?.motivo || '' }} prioridades={prior} abrirRuta={(id) => ir({ t: 'ruta', id })} abrirCliente={(c) => ir({ t: 'cliente', c })} capacidades={fuente?.capacidades} />}
         {vista.t === 'ruta' && <Ruta id={vista.id} abrirCliente={(c) => ir({ t: 'cliente', c })} volver={volver} />}
-        {vista.t === 'cliente' && <Cliente codigo={vista.c} volver={volver} />}
-        {vista.t === 'alertas' && <Alertas rutas={visibles} abrirCliente={(c) => ir({ t: 'cliente', c })} />}
+        {vista.t === 'cliente' && <Cliente codigo={vista.c} volver={volver} user={user} />}
+        {vista.t === 'alertas' && <Alertas rutas={rutas} abrirCliente={(c) => ir({ t: 'cliente', c })} />}
+        {vista.t === 'visitas' && (rutas.length ? <Visitas rutas={rutas} /> : <p className="muted">No hay rutas asignadas.</p>)}
+        {vista.t === 'reportes' && glob && <Reportes />}
+        {vista.t === 'admin' && user.rol === 'admin' && <Admin />}
+        {vista.t === 'auditoria' && glob && <Auditoria />}
       </main>
-      <footer>Solo lectura · sin conexión a SAP ni a Cosprobell BD · las decisiones de gerencia se muestran junto al cálculo base.</footer>
+      <footer>Sesión de {user.usuario}. Solo lectura de SAP/Cosprobell BD · datos del snapshot, no en vivo · las decisiones de gerencia se muestran junto al cálculo automático.</footer>
     </div>
   )
 }

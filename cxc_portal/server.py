@@ -1,241 +1,81 @@
-"""API HTTP local del portal CxC (solo libreria estandar; solo lectura; solo 127.0.0.1 por defecto).
+"""Arranque del portal CxC (servidor HTTP propio, solo libreria estandar).
 
-    python -m cxc_portal.server [--port 8780] [--web portal-web/dist]
-
-Endpoints (todos GET, JSON salvo el CSV):
-    /api/health
-    /api/fuentes                     fuentes cargadas y estado de la fuente EN VIVO (no conectada)
-    /api/reglas                      reglas del semaforo vigentes
-    /api/rutas                       resumen por ruta
-    /api/rutas/<id>/clientes         ?zona=&clasificacion=&q=   (orden de folders de la ruta)
-    /api/rutas/<id>/reporte.csv      descarga
-    /api/clientes/<codigo>           detalle + ultimas 10 facturas + explicacion
-    /api/prioridades                 ?ruta=&n=10  mayores saldos del snapshot (consulta 1, 08/10/2026)
-    /api/alertas                     ?ruta=  alertas de cobro (facturas ABIERTAS > 60 d) e historicas (PAGADAS > 60 d), separadas
-No hay endpoints de escritura: el portal no escribe en SAP ni en Cosprobell BD.
+Modos de exposicion (verificables; ver docs/DESPLIEGUE-SEGURO.md):
+  * LOCAL (por defecto): escucha solo en 127.0.0.1. HTTP simple; cookies sin 'Secure'.
+  * HTTPS DIRECTO: --tls-cert/--tls-key (TLS >= 1.2). Permite --host no-loopback, SOLO con --hosts-permitidos.
+  * DETRAS DE PROXY HTTPS (Caddy/nginx/tunel): --detras-de-proxy-https; la app sigue escuchando en loopback y el proxy termina TLS.
+Nunca se escucha fuera de loopback sin TLS ni sin lista explicita de hosts. La autenticacion es SIEMPRE obligatoria.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
-import io
-import json
-import mimetypes
+import os
+import ssl
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, unquote, urlparse
 
-from cxc_bot import payment_semaphore as sm
-
-from .bridge import estado_reporting_core
-from .store import RouteStore, Ruta
+from .app import LOOPBACK, Contexto, make_handler
+from .estado import Estado
+from .fuentes import crear_fuente
+from .store import ENV_DATOS, ENV_ESTADO, PortalServicio
 
 DEFAULT_PORT = 8780
-LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_WEB = Path(__file__).resolve().parent.parent / "portal-web" / "dist"
 
-EN_VIVO = {
-    "disponible": False,
-    "motivo": "Sin credencial SELECT dedicada a Cosprobell BD ni conexión SAP. Todos los datos mostrados son snapshots históricos o sintéticos.",
-}
 
-REGLAS = {
-    "vigencia": "Hub Cosprobell CxC — Principal, decisiones 08–09/10/2026",
-    "ventana_facturas": sm.VENTANA_FACTURAS,
-    "minimo_historial": sm.MIN_HISTORIAL,
-    "umbrales_media_mora": {"A": f"≤ {sm.TOLERANCIA_A}", "B": f"> {sm.TOLERANCIA_A} y ≤ {sm.LIMITE_B}", "C": f"> {sm.LIMITE_B} y ≤ {sm.LIMITE_C}", "CANDIDATO_SOLO_CONTADO": f"> {sm.LIMITE_C}"},
-    "abiertas_entran_a_la_media_si": f"mora > {sm.ABIERTA_MORA_MINIMA} días",
-    "alerta_por_factura": f"mora > {sm.ALERTA_FACTURA} días: abiertas = alerta operativa de cobro; pagadas = alerta histórica de comportamiento (nunca cobro pendiente)",
-    "plazos": {"foranea": sm.PLAZO_FORANEA, "local": sm.PLAZO_LOCAL},
-    "notas": [
-        "Se evalúan las 10 facturas más recientes (emisión DESC, desempate número DESC).",
-        "0–3 facturas en todo el historial: cliente de prueba (blanca).",
-        "Mora = max(0, último recibo contable (o corte si está abierta) − emisión − plazo de la ruta). El vencimiento SAP se conserva, no es la base.",
-        "La media usa facturas pagadas íntegramente por recibos y abiertas con mora > 5 días; no se redondea antes de clasificar.",
-        "Más de 60 días es solo candidato a solo contado: la viñeta roja la decide gerencia.",
-        "Las decisiones de gerencia se guardan aparte; el cálculo base no se altera.",
-    ],
-}
-
-
-def _clientes_filtrados(r: Ruta, qs: dict) -> List[dict]:
-    zona = (qs.get("zona", [""])[0] or "").upper()
-    clas = (qs.get("clasificacion", [""])[0] or "").upper()
-    q = (qs.get("q", [""])[0] or "").strip().upper()
-    out = []
-    for c in r.clientes:  # orden de la lista = orden de folders confirmado
-        if zona and c.zona.upper() != zona:
-            continue
-        if clas and c.resultado.final.upper() != clas:
-            continue
-        if q and q not in c.codigo.upper() and q not in c.nombre.upper() and q not in c.folder.upper():
-            continue
-        out.append(r.cliente_dict(c))
-    return out
+def construir(data_dir: Optional[Path], estado_dir: Optional[Path], *, demo: bool = False, https: bool = False,
+              hosts: Optional[List[str]] = None, confiar_proxy: bool = False, reporting_src: Optional[str] = None, reloj=None):
+    data_dir = Path(data_dir) if data_dir else (Path(os.environ[ENV_DATOS]) if os.environ.get(ENV_DATOS) else None)
+    if estado_dir is None:
+        estado_dir = Path(os.environ[ENV_ESTADO]) if os.environ.get(ENV_ESTADO) else ((data_dir.parent / "estado") if data_dir else None)
+    if estado_dir is None:
+        raise SystemExit("Falta el directorio de estado (--estado o CXC_ESTADO_DIR): ahí vive la BD propia de usuarios, decisiones y visitas.")
+    if reporting_src:
+        os.environ["CXC_REPORTING_SRC"] = reporting_src
+    estado = Estado(Path(estado_dir) / "portal.sqlite3", **({"reloj": reloj} if reloj else {}))
+    if demo:
+        from .demo import FuenteSintetica
+        fuente = FuenteSintetica()
+    else:
+        fuente = crear_fuente(data_dir, os.environ.get("CXC_FUENTE", "snapshot"))
+    reporting = None
+    if fuente is not None and os.environ.get("CXC_REPORTING_SRC"):
+        from .reporting_bridge import ReportingNoDisponible, ReportingService
+        try:
+            reporting = ReportingService(fuente, Path(estado_dir))
+        except ReportingNoDisponible as e:
+            print(f"AVISO: {e}", file=sys.stderr)
+    if demo:
+        from .demo import sembrar_demo
+        sembrar_demo(estado, {"id": None, "usuario": "demo", "rol": "admin"})
+    servicio = PortalServicio(estado, fuente, Path(estado_dir), reporting, data_dir)
+    return Contexto(servicio, estado, https=https, hosts_permitidos=hosts, confiar_proxy=confiar_proxy)
 
 
-def _csv(r: Ruta) -> bytes:
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["# Ruta", r.nombre, "Fuente", r.fuente.get("etiqueta"), "Corte", r.fuente.get("fecha_corte")])
-    w.writerow(["Folder", "Zona", "Codigo", "Cliente", "Saldo", "Clasificacion calculada", "Clasificacion final", "Color final",
-                "Mora media", "Facturas historial", "Facturas evaluables", "Alertas de cobro (abiertas > 60 d)", "Alertas historicas (pagadas > 60 d)", "Decision de gerencia"])
-    for c in r.clientes:
-        s = c.resultado
-        dec = s.decision_gerencia
-        w.writerow([c.folder, c.zona, c.codigo, c.nombre, f"{c.saldo:.2f}", s.calculado, s.final, s.color_final,
-                    f"{s.promedio_mora:.2f}" if s.promedio_mora is not None else "", s.historial_total, s.evaluables, len(s.alertas_cobro), len(s.alertas_historicas),
-                    f"{dec.actor}: {dec.motivo}" if dec else ""])
-    return ("﻿" + buf.getvalue()).encode("utf-8")
+def validar_exposicion(host: str, tls: bool, detras_de_proxy: bool, hosts: List[str]) -> None:
+    if host in LOOPBACK:
+        return
+    if not (tls or detras_de_proxy):
+        raise SystemExit(f"Host '{host}' rechazado: fuera de loopback se exige HTTPS (--tls-cert/--tls-key) o --detras-de-proxy-https.")
+    if not hosts:
+        raise SystemExit("Fuera de loopback se exige --hosts-permitidos con los nombres de host públicos (defensa contra Host falsos).")
 
 
-def make_handler(store: RouteStore, web_dir: Optional[Path]):
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "cxc-portal/0.1"
-
-        def log_message(self, fmt, *args):  # sin ruido en consola
-            pass
-
-        def _cors(self):
-            origin = self.headers.get("Origin", "")
-            if origin.startswith(("http://localhost:", "http://127.0.0.1:")):
-                self.send_header("Access-Control-Allow-Origin", origin)
-
-        def _send(self, status: int, body: bytes, ctype: str, extra: Optional[dict] = None):
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self._cors()
-            for k, v in (extra or {}).items():
-                self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _json(self, payload, status: int = 200):
-            self._send(status, json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"), "application/json; charset=utf-8")
-
-        def do_OPTIONS(self):  # noqa: N802
-            self.send_response(204)
-            self._cors()
-            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            self.end_headers()
-
-        def do_POST(self):  # noqa: N802
-            self._json({"error": "El portal es de solo lectura."}, 405)
-
-        do_PUT = do_DELETE = do_PATCH = do_POST  # noqa: N815
-
-        def _host_ok(self) -> bool:
-            """Defensa contra DNS rebinding: solo se atiende si el Host es la propia maquina."""
-            h = (self.headers.get("Host") or "").strip().lower()
-            nombre = h[1:h.index("]")] if h.startswith("[") else h.rsplit(":", 1)[0] if ":" in h else h
-            return nombre in LOOPBACK
-
-        def do_GET(self):  # noqa: N802
-            if not self._host_ok():
-                return self._json({"error": "Host no permitido: el portal es solo local."}, 403)
-            u = urlparse(self.path)
-            parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
-            qs = parse_qs(u.query)
-            if not parts or parts[0] != "api":
-                return self._static(u.path)
-            try:
-                return self._api(parts[1:], qs)
-            except Exception as e:  # noqa: BLE001 - limite de la API
-                return self._json({"error": f"Error interno: {e}"}, 500)
-
-        def _api(self, p: List[str], qs: dict):
-            if p == ["health"]:
-                return self._json({"status": "ok", "modo": "solo-lectura"})
-            if p == ["fuentes"]:
-                return self._json({
-                    "en_vivo": EN_VIVO,
-                    "rutas": [{"route_id": r.route_id, "nombre": r.nombre, "fuente": r.fuente} for r in store.rutas.values()],
-                    "errores_de_carga": store.errores,
-                    "avisos_de_conciliacion": {r.route_id: r.avisos for r in store.rutas.values() if r.avisos},
-                    "reporting_core": estado_reporting_core(),
-                })
-            if p == ["reglas"]:
-                return self._json(REGLAS)
-            if p == ["rutas"]:
-                return self._json({"rutas": store.listar(), "en_vivo": EN_VIVO})
-            if len(p) == 3 and p[0] == "rutas" and p[2] == "clientes":
-                r = store.ruta(p[1])
-                if not r:
-                    return self._json({"error": "Ruta no encontrada"}, 404)
-                return self._json({"ruta": r.resumen(), "zonas": r.zonas, "clientes": _clientes_filtrados(r, qs)})
-            if len(p) == 3 and p[0] == "rutas" and p[2] == "reporte.csv":
-                r = store.ruta(p[1])
-                if not r:
-                    return self._json({"error": "Ruta no encontrada"}, 404)
-                return self._send(200, _csv(r), "text/csv; charset=utf-8",
-                                  {"Content-Disposition": f'attachment; filename="cxc_{r.route_id}_{r.fuente.get("fecha_corte")}.csv"'})
-            if len(p) == 2 and p[0] == "clientes":
-                hit = store.buscar_cliente(p[1])
-                if not hit:
-                    return self._json({"error": "Cliente no encontrado"}, 404)
-                r, c = hit
-                return self._json(r.cliente_dict(c))
-            if p == ["prioridades"]:
-                n = max(1, min(50, int((qs.get("n", ["10"])[0]) or 10)))
-                rid = qs.get("ruta", [""])[0]
-                rutas = [store.ruta(rid)] if rid and store.ruta(rid) else [r for r in store.rutas.values() if r.fuente.get("tipo") != "SINTETICO_DEMO"]
-                items = [(r, c) for r in rutas for c in r.clientes if c.saldo > 0]
-                items.sort(key=lambda rc: rc[1].saldo, reverse=True)
-                return self._json({
-                    "nota": "Mayores saldos del snapshot. No es cartera en vivo; para priorizar cobro se requiere fuente fiable.",
-                    "prioridades": [{**r.cliente_dict(c), "ruta_nombre": r.nombre} for r, c in items[:n]]})
-            if p == ["alertas"]:
-                rid = qs.get("ruta", [""])[0]
-                rutas = [store.ruta(rid)] if rid and store.ruta(rid) else [r for r in store.rutas.values() if r.fuente.get("tipo") != "SINTETICO_DEMO"]
-                cobro, hist = [], []
-                for r in rutas:
-                    for c in r.clientes:
-                        base = {"codigo": c.codigo, "cliente": c.nombre, "folder": c.folder, "ruta": r.route_id, "ruta_nombre": r.nombre,
-                                "vendedor": r.vendedor, "fecha_corte": r.fuente.get("fecha_corte"), "clasificacion_final": c.resultado.final}
-                        cobro += [{**base, **a.to_dict()} for a in c.resultado.alertas_cobro]
-                        hist += [{**base, **a.to_dict()} for a in c.resultado.alertas_historicas]
-                cobro.sort(key=lambda a: (a["saldo_pendiente"] or 0), reverse=True)
-                hist.sort(key=lambda a: a["mora"], reverse=True)
-                return self._json({
-                    "nota": "Datos del snapshot, no en vivo. Las alertas de cobro son operativas (hay saldo pendiente); las históricas son de comportamiento y NO son cobro pendiente.",
-                    "cobro_operativas": cobro, "historicas_comportamiento": hist})
-            return self._json({"error": "Endpoint no encontrado"}, 404)
-
-        def _static(self, path: str):
-            if not web_dir or not web_dir.is_dir():
-                return self._json({"error": "Frontend no construido. Ejecuta `npm run build` en portal-web/ o usa `npm run dev`.",
-                                   "api": "/api/rutas"}, 404)
-            rel = path.lstrip("/") or "index.html"
-            target = (web_dir / rel).resolve()
-            if web_dir.resolve() not in target.parents and target != web_dir.resolve():
-                return self._json({"error": "Ruta no permitida"}, 403)
-            if not target.is_file():
-                target = web_dir / "index.html"  # SPA
-            ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-            if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
-                ctype += "; charset=utf-8"
-            return self._send(200, target.read_bytes(), ctype)
-
-    return Handler
-
-
-def run(host: str, port: int, data_dir: Optional[Path], web_dir: Optional[Path]) -> None:
-    # Sin autenticacion real el portal SOLO escucha en la maquina local (datos privados de clientes).
-    if host not in LOOPBACK:
-        raise SystemExit(f"Host '{host}' rechazado: el portal solo puede escuchar en loopback ({', '.join(LOOPBACK)}) hasta que exista autenticación real.")
-    store = RouteStore(data_dir)
-    srv = ThreadingHTTPServer((host, port), make_handler(store, web_dir))
-    print(f"Portal CxC (solo lectura) en http://{host}:{port}  | rutas cargadas: {', '.join(store.rutas) or '(ninguna)'}")
-    for e in store.errores:
-        print("  AVISO:", e, file=sys.stderr)
-    for r in store.rutas.values():
-        for a in r.avisos:
-            print(f"  AVISO conciliación {r.route_id}:", a, file=sys.stderr)
+def run(host: str, port: int, ctx: Contexto, web_dir: Optional[Path], tls_cert: Optional[Path] = None, tls_key: Optional[Path] = None) -> None:
+    srv = ThreadingHTTPServer((host, port), make_handler(ctx, web_dir))
+    if tls_cert and tls_key:
+        c = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        c.minimum_version = ssl.TLSVersion.TLSv1_2
+        c.load_cert_chain(str(tls_cert), str(tls_key))
+        srv.socket = c.wrap_socket(srv.socket, server_side=True)
+    esquema = "https" if ctx.https else "http"
+    usuarios = ctx.estado.listar_usuarios()
+    print(f"Portal CxC en {esquema}://{host}:{port} | rutas: {', '.join(ctx.servicio.rutas()) or '(ninguna)'} | usuarios: {len(usuarios)}", flush=True)
+    if not usuarios:
+        print("AVISO: no hay usuarios. Cree el primero: python -m cxc_portal.admin crear-usuario --usuario <u> --rol admin", file=sys.stderr)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -245,13 +85,27 @@ def run(host: str, port: int, data_dir: Optional[Path], web_dir: Optional[Path])
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Portal CxC - API local de solo lectura")
+    ap = argparse.ArgumentParser(description="Portal CxC (autenticación obligatoria, solo libreria estandar)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
-    ap.add_argument("--datos", type=Path, help="Directorio PRIVADO con 01_Rutas/ y 02_SAP_08Oct2026/ (o variable CXC_DATOS_DIR)")
+    ap.add_argument("--datos", type=Path, help="Directorio PRIVADO con 01_Rutas/ y 02_SAP_08Oct2026/ (o CXC_DATOS_DIR)")
+    ap.add_argument("--estado", type=Path, help="Directorio PRIVADO de la BD propia (o CXC_ESTADO_DIR; por defecto <datos>/../estado)")
     ap.add_argument("--web", type=Path, default=DEFAULT_WEB)
+    ap.add_argument("--reporting-src", help="Ruta a cxc-reporting-core/src (o CXC_REPORTING_SRC)")
+    ap.add_argument("--demo", action="store_true", help="Usa datos SINTÉTICOS (ruta DEMO) en lugar del snapshot: solo desarrollo/pruebas")
+    ap.add_argument("--tls-cert", type=Path)
+    ap.add_argument("--tls-key", type=Path)
+    ap.add_argument("--detras-de-proxy-https", action="store_true", help="Un proxy externo termina TLS: cookies 'Secure' y HSTS")
+    ap.add_argument("--hosts-permitidos", default="", help="Nombres de host públicos separados por coma")
     a = ap.parse_args(argv)
-    run(a.host, a.port, a.datos, a.web)
+    hosts = [h.strip() for h in a.hosts_permitidos.split(",") if h.strip()]
+    tls = bool(a.tls_cert and a.tls_key)
+    if bool(a.tls_cert) != bool(a.tls_key):
+        raise SystemExit("--tls-cert y --tls-key van juntos.")
+    validar_exposicion(a.host, tls, a.detras_de_proxy_https, hosts)
+    ctx = construir(a.datos, a.estado, demo=a.demo, https=tls or a.detras_de_proxy_https, hosts=hosts, confiar_proxy=a.detras_de_proxy_https,
+                    reporting_src=a.reporting_src)
+    run(a.host, a.port, ctx, a.web, a.tls_cert, a.tls_key)
     return 0
 
 

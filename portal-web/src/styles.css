@@ -61,3 +61,16 @@ tr.detalle td { border-bottom: 1px solid var(--line); padding-top: 0; }
 tr.detalle { background: var(--bg); }
 
 .hist { color: var(--muted); }
+
+.login { max-width: 380px; margin: 12vh auto; padding: 0 16px; }
+.login h1 { margin-bottom: 4px; }
+.form { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; max-width: 560px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+textarea { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+button.sec { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
+.form button, .filtros button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; font: inherit; }
+.form button:disabled, .filtros button:disabled { opacity: .5; cursor: default; }
+.filtros button.sec { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+td.reg { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+details.card { margin: 10px 0; }
+details summary { cursor: pointer; }
