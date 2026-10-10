@@ -131,3 +131,13 @@ def test_el_servidor_rechaza_escuchar_fuera_de_loopback():
     for host in ("0.0.0.0", "192.168.1.10", ""):
         with pytest.raises(SystemExit, match="loopback"):
             run(host, 0, None, None)
+
+
+def test_rechaza_peticiones_con_host_ajeno_dns_rebinding(api):
+    import http.client
+    puerto = int(api.rsplit(":", 1)[1])
+    for host, esperado in (("evil.example.com", 403), ("evil.example.com:8780", 403), ("127.0.0.1:%d" % puerto, 200), ("localhost:%d" % puerto, 200)):
+        c = http.client.HTTPConnection("127.0.0.1", puerto)
+        c.request("GET", "/api/health", headers={"Host": host})
+        assert c.getresponse().status == esperado, host
+        c.close()

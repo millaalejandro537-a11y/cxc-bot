@@ -107,8 +107,8 @@ def test_candidato_no_es_rojo_y_requiere_gerencia():
 
 def test_override_conserva_calculo_automatico_y_traza():
     dec = ps.DecisionGerencia("C", "Mal cobro de un vendedor anterior.", "Gerencia", "2026-10-09")
-    r = ev(serie([113] * 5), dec=dec)
-    assert r.calculado == ps.CANDIDATO_SOLO_CONTADO and r.promedio_mora == 113.0 and r.alertas
+    r = ev(serie([120] * 5), dec=dec)
+    assert r.calculado == ps.CANDIDATO_SOLO_CONTADO and r.promedio_mora == 120.0 and r.alertas
     assert r.final == "C" and r.color_final == "AMARILLO" and r.decision_gerencia.fecha == "2026-10-09"
     d = r.to_dict()
     assert d["calculado"] == "CANDIDATO_SOLO_CONTADO" and d["decision_gerencia"]["actor"] == "Gerencia"

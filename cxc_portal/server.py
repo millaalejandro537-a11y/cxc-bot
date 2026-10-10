@@ -34,6 +34,7 @@ from .bridge import estado_reporting_core
 from .store import RouteStore, Ruta
 
 DEFAULT_PORT = 8780
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_WEB = Path(__file__).resolve().parent.parent / "portal-web" / "dist"
 
 EN_VIVO = {
@@ -128,7 +129,15 @@ def make_handler(store: RouteStore, web_dir: Optional[Path]):
 
         do_PUT = do_DELETE = do_PATCH = do_POST  # noqa: N815
 
+        def _host_ok(self) -> bool:
+            """Defensa contra DNS rebinding: solo se atiende si el Host es la propia maquina."""
+            h = (self.headers.get("Host") or "").strip().lower()
+            nombre = h[1:h.index("]")] if h.startswith("[") else h.rsplit(":", 1)[0] if ":" in h else h
+            return nombre in LOOPBACK
+
         def do_GET(self):  # noqa: N802
+            if not self._host_ok():
+                return self._json({"error": "Host no permitido: el portal es solo local."}, 403)
             u = urlparse(self.path)
             parts = [unquote(p) for p in u.path.strip("/").split("/") if p]
             qs = parse_qs(u.query)
@@ -213,9 +222,6 @@ def make_handler(store: RouteStore, web_dir: Optional[Path]):
             return self._send(200, target.read_bytes(), ctype)
 
     return Handler
-
-
-LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 def run(host: str, port: int, data_dir: Optional[Path], web_dir: Optional[Path]) -> None:
