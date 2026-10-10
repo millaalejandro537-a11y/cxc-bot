@@ -1,0 +1,11 @@
+# EJEMPLO (no instalado ni en uso). Caddy termina TLS y reenvia al portal, que escucha SOLO en 127.0.0.1:8780.
+# Arranque del portal:  python -m cxc_portal.server --detras-de-proxy-https --hosts-permitidos portal.ejemplo.com ...
+portal.ejemplo.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8780 {
+        header_up X-Forwarded-For {remote_host}
+    }
+    header {
+        -Server
+    }
+}

@@ -208,11 +208,17 @@ def _rebuild_client_block(
 
     new_total_row = config.data_start_row + new_count
 
+    con_folder = [e.folder for e in new_roster if e.folder]
+    if con_folder and len(con_folder) != len(new_roster):
+        raise ExcelServiceError("Modo folder por zona: TODOS los clientes deben traer folder (o ninguno).")
+    if len(set(con_folder)) != len(con_folder):
+        raise ExcelServiceError("Modo folder por zona: hay folders duplicados.")
+
     for i, entry in enumerate(new_roster):
         row = config.data_start_row + i
-        ws[f"{config.num_col}{row}"] = i + 1
+        ws[f"{config.num_col}{row}"] = entry.folder if entry.folder else i + 1
         ws[f"{config.code_col}{row}"] = entry.codigo
-        ws[f"{config.name_col}{row}"] = config.name_formula_for(row)
+        ws[f"{config.name_col}{row}"] = entry.nombre_ruta if entry.nombre_ruta else config.name_formula_for(row)
         ws[f"{config.factura_col}{row}"] = entry.no_factura
         ws[f"{config.saldo_col}{row}"] = config.saldo_formula_for(row)
         ws[f"{config.obs_col}{row}"] = "" if clear_observaciones else (entry.observacion or "")
@@ -343,7 +349,8 @@ def compute_cached_values(
             total_is_error = True
         else:
             nombre, saldo = match
-            cells[name_ref] = ("str", nombre)
+            if not getattr(entry, "nombre_ruta", None):  # con nombre propio de ruta la celda es literal: no hay formula que cachear
+                cells[name_ref] = ("str", nombre)
             cells[saldo_ref] = ("n", float(saldo) if isinstance(saldo, (int, float)) else 0.0)
             if not total_is_error:
                 total_sum += float(saldo) if isinstance(saldo, (int, float)) else 0.0
@@ -472,6 +479,14 @@ def normalize_date(value) -> date:
     raise ExcelServiceError(f"Formato de fecha no soportado: {value!r}")
 
 
+def _forzar_recalculo(wb) -> None:
+    """Pide a Excel recalcular al abrir. Algunos libros (p. ej. exportados por otras herramientas) no traen calcPr: se crea."""
+    if wb.calculation is None:
+        from openpyxl.workbook.properties import CalcProperties
+        wb.calculation = CalcProperties()
+    wb.calculation.fullCalcOnLoad = True
+
+
 def generate_route(
     route_config: RouteConfig,
     base_path: Path,
@@ -532,7 +547,7 @@ def generate_route(
 
     replace_sap_table(ws_sap, sap_records, route_config)
 
-    wb.calculation.fullCalcOnLoad = True
+    _forzar_recalculo(wb)
     wb.save(output_path)
 
     sap_lookup = build_sap_lookup_map(sap_records)
@@ -609,7 +624,7 @@ def edit_route(
         clear_observaciones=False,
     )
 
-    wb.calculation.fullCalcOnLoad = True
+    _forzar_recalculo(wb)
     wb.save(output_path)
 
     cached_values = compute_cached_values(route_config, new_roster, new_total_row, sap_lookup)

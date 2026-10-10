@@ -36,6 +36,7 @@ class FuenteDatos(Protocol):
     def nombre_cliente(self, codigo: str) -> Optional[str]: ...
     def saldo_abierto(self, codigo: str) -> float: ...
     def documentos_abiertos(self) -> List[Dict[str, Any]]: ...
+    def registros_sap(self) -> List[tuple]: ...
     def frescura(self, hoy: Optional[date] = None) -> Dict[str, Any]: ...
 
 
@@ -66,6 +67,11 @@ class FuenteSnapshotSAP:
     def saldo_abierto(self, codigo: str) -> float:
         return self.datos().saldo_abierto.get(codigo.upper(), 0.0)
 
+    def registros_sap(self) -> List[tuple]:
+        """(codigo, nombre, saldo abierto) de todos los clientes del snapshot: alimenta la hoja de datos SAP de los Excel de ruta."""
+        d = self.datos()
+        return [(c, n, d.saldo_abierto.get(c, 0.0)) for c, n in sorted(d.nombres.items()) if c.startswith("C")]
+
     def documentos_abiertos(self) -> List[Dict[str, Any]]:
         """Facturas ABIERTAS (estado SAP 'O') de todos los clientes, para el pipeline de cxc-reporting-core."""
         out = []
@@ -94,7 +100,7 @@ class FuenteViva:
     def _no(self, *a, **k):
         raise FuenteNoConfigurada("La fuente en vivo no está configurada ni autorizada (falta credencial SELECT de solo lectura y contrato de integración).")
 
-    facturas_por_cliente = nombre_cliente = saldo_abierto = documentos_abiertos = _no
+    facturas_por_cliente = nombre_cliente = saldo_abierto = documentos_abiertos = registros_sap = _no
 
     def frescura(self, hoy: Optional[date] = None) -> Dict[str, Any]:
         return {"tipo": self.tipo, "vigente": False, "motivo": "Fuente en vivo no configurada."}

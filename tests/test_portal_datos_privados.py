@@ -227,3 +227,39 @@ def test_los_excel_originales_no_se_alteran():
         if linea.strip():
             h, nombre = linea.split(None, 1)
             assert hashlib.sha256((Path(DATOS) / nombre.strip().lstrip("*")).read_bytes()).hexdigest() == h.lower(), nombre
+
+
+@pytest.mark.parametrize("rid,lista,hoja", [("LAS_VEGAS", "Las_Vegas_Orden_Por_Zonas_Con_Leyenda.xlsx", "LAS VEGAS"), ("YORO", "Yoro_Orden_Zonas_Corregido_Con_Leyenda.xlsx", "YORO")])
+def test_el_excel_generado_desde_el_portal_reproduce_el_formato_aprobado_celda_por_celda(entorno, tmp_path, rid, lista, hoja):
+    s, ctx, tmp = entorno
+    # el servicio de esta prueba necesita el directorio de datos para leer la base y escribir salidas en un estado temporal
+    ctx.servicio.data_dir = Path(DATOS)
+    ger = cliente_con_login(s, "ger1", CLAVE_GER)
+    st, cab, body = ger.post(f"/api/rutas/{rid}/generar-excel", {"base": lista, "fecha_salida": "2026-10-13"})
+    ctx.servicio.data_dir = None
+    assert st == 200, body
+    assert "BORRADOR" in cab["x-cxc-aviso"]
+    out = tmp_path / "gen.xlsx"
+    out.write_bytes(body)
+    gen = openpyxl.load_workbook(out, data_only=True)
+    apr = openpyxl.load_workbook(Path(DATOS) / "01_Rutas" / lista, data_only=True)
+    assert gen.sheetnames == [hoja, "Hoja1"]                       # exactamente las dos hojas operativas
+    a, b = gen[hoja], apr[hoja]
+    def ultima_con_datos(ws):
+        return max((c.row for fila in ws.iter_rows() for c in fila if c.value not in (None, "")), default=0)
+
+    assert ultima_con_datos(a) == ultima_con_datos(b)  # mismo contenido hasta la leyenda (filas en blanco con formato no cuentan)
+    difs = []
+    for fila in range(1, ultima_con_datos(b) + 1):
+        for col in "ABCDEFG":
+            va, vb = a[f"{col}{fila}"].value, b[f"{col}{fila}"].value
+            if (fila, col) == (5, "B"):
+                assert str(va)[:10] == "2026-10-13"                  # solo cambia la fecha de la salida
+                continue
+            if va != vb and not (va in (None, "") and vb in (None, "")):
+                difs.append((col, fila, va, vb))
+    assert difs == [], difs[:5]
+    # formato: anchos de columna y celdas fusionadas de la portada iguales al aprobado
+    ga, ap_ = openpyxl.load_workbook(out)[hoja], openpyxl.load_workbook(Path(DATOS) / "01_Rutas" / lista)[hoja]
+    assert {k: round(v.width or 0, 1) for k, v in ga.column_dimensions.items()} == {k: round(v.width or 0, 1) for k, v in ap_.column_dimensions.items()}
+    assert sorted(map(str, ga.merged_cells.ranges)) == sorted(map(str, ap_.merged_cells.ranges))

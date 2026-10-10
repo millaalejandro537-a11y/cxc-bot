@@ -51,11 +51,12 @@ Credencial SELECT de BLC → inspección de esquema solo lectura → adaptador d
 `python -m pytest tests/ -q` con el venv `C:\Users\LTP\Documents\Codex\environments\cxc-bot-windows\.venv`. 
 Último resultado completo (2026-10-09, antes del commit): **290 passed, 1 skipped** (test POSIX conocido en Windows), 165.7 s. Antes de este trabajo: 229 passed, 1 skipped. El hash del commit está en `git log`.
 
-## Portal CxC MVP (2026-10-09, sin deploy, sin push)
+## Portal CxC — preparación operativa (2026-10-10, sin deploy, sin push)
 
-Detalle en `docs/PORTAL-MVP.md`. Nuevo: `cxc_bot/payment_semaphore.py` (**único motor vigente del semáforo**, reglas 09/10), `cxc_portal/` (API Python solo lectura), `portal-web/` (React+Vite). `payment_behavior.evaluate_client` queda **deprecado** (reglas superadas; solo se conservan sus primitivas).
-- Datos privados FUERA de Git: `C:\Users\LTP\Documents\CxC-Datos-Privados\2026-10-08` (consultas SAP 08/10 + Excel aprobados). El motor reproduce los Excel aprobados: 55/55 clientes y todas las facturas de Las Vegas. La regresión con esos datos solo corre con `CXC_DATOS_DIR` (se omite sin él).
-- Integrado al generador: `process_due_routes(payment_evidence=...)` / `process-due-routes --semaforo-datos DIR` (opcional; rutas con `credit_days`: Las Vegas y Yoro = 60). No altera el Excel.
-- Decisiones de gerencia en `decisiones_gerencia.json` (privado). Las Vegas: Espacio de Belleza (3 LV) y Antonella (6 LV) aprobados SOLO CONTADO/roja; Excel original intacto, discrepancia explicada en la conciliación. Estado físico: Las Vegas terminada (24 viñetas); Yoro pendiente (≈4/31).
-- Alertas > 60 d separadas: abiertas = cobro operativo; pagadas = histórico de comportamiento.
-- Pendiente: viñeta/semáforo dentro del Excel operativo; credencial SELECT; auth real (el servidor solo escucha en loopback); BD propia de visitas; deploy. `cxc-reporting-core` no se tocó.
+Detalle en `docs/PORTAL-MVP.md`, `docs/DESPLIEGUE-SEGURO.md`, `docs/INTEGRACION-SAP-VIVO.md`, `docs/PLAN-VINETAS-EXCEL.md`.
+- **Un solo sistema:** `cxc_portal/` (API Python + BD propia SQLite con usuarios/roles/rutas/decisiones/visitas/auditoría) + `portal-web/` (React). Semáforo = único motor `cxc_bot/payment_semaphore.py`. Reportes gerenciales = `cxc-reporting-core` (rama feature, sin fusionar ni modificar) alimentado por un RowProvider del portal; cortes del snapshot NO VALIDADOS.
+- **Seguridad:** autenticación obligatoria, RBAC en la API (admin/gerencia/vendedor), CSRF, scrypt, bloqueo, sesiones con expiración, cabeceras, host/origen, TLS directo o tras proxy HTTPS; fuera de loopback solo con TLS + hosts permitidos.
+- **Generador de Excel:** `ClientEntry.folder` y `nombre_ruta` (opt-in), `validate_workbook(folder_mode=, nombres_literales=)`, plantilla `YORO FOLDERS` en `config/routes.json`; el Excel generado por el portal reproduce los aprobados de Las Vegas y Yoro celda por celda. Aún sin viñetas de color (plan aparte).
+- **Fuente de datos:** interfaz `FuenteDatos` (snapshot hoy). `validar_fuente` = prueba de aceptación de solo lectura para el ingeniero.
+- **Datos privados** (fuera de Git): `C:\Users\LTP\Documents\CxC-Datos-Privados\{2026-10-08, estado}`. Credenciales iniciales generadas en `estado\credenciales_iniciales.txt` (borrar tras el primer acceso).
+- **Bloqueos reales:** decisión de acceso (Tailscale/Cloudflare/nube) y su costo/instalación; credencial SELECT + contrato Gelsyn + prueba contable; cuentas reales; 2.º factor; respaldo/restauración.

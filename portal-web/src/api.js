@@ -22,3 +22,17 @@ export async function api(path, { method = 'GET', body } = {}) {
 }
 
 export const post = (path, body = {}) => api(path, { method: 'POST', body })
+
+// Descarga un archivo generado por POST (p. ej. el Excel de ruta) usando la sesión y el token CSRF.
+export async function descargar(path, body) {
+  const r = await fetch(`/api${path}`, {
+    method: 'POST', credentials: 'same-origin', body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+  })
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`)
+  const nombre = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '')?.[1] || 'ruta.xlsx'
+  const url = URL.createObjectURL(await r.blob())
+  const a = document.createElement('a')
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+  return { nombre, aviso: r.headers.get('x-cxc-aviso') }
+}

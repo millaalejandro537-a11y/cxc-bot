@@ -73,6 +73,27 @@
     "filename_prefix": "YORO",
     "credit_days": 60
   },
+  "YORO FOLDERS": {
+    "vendor": "Darwing Milla",
+    "main_sheet": "YORO",
+    "data_sheet": "Hoja1",
+    "fecha_cell": "B5",
+    "header_row": 7,
+    "data_start_row": 8,
+    "factura_col": "E",
+    "saldo_col": "F",
+    "obs_col": "G",
+    "total_label_col": "E",
+    "total_value_col": "F",
+    "total_label_text": "TOTAL",
+    "passthrough_cols": [
+      "D"
+    ],
+    "name_formula": "=IFERROR(VLOOKUP({code_ref},{data_sheet}!$A$2:$C$1400,2,FALSE),\"REVISAR C\u00d3DIGO SAP\")",
+    "saldo_formula": "=IFERROR(VLOOKUP({code_ref},{data_sheet}!$A$2:$C$1400,3,FALSE),\"REVISAR C\u00d3DIGO SAP\")",
+    "filename_prefix": "YORO",
+    "credit_days": 60
+  },
   "ROATAN": {
     "vendor": "Darwing Milla",
     "main_sheet": "Hoja1",

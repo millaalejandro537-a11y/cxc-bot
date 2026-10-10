@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS vendedores (id INTEGER PRIMARY KEY, nombre TEXT NOT N
 CREATE TABLE IF NOT EXISTS rutas (
     route_id TEXT PRIMARY KEY, nombre TEXT NOT NULL, vendedor_id INTEGER NOT NULL REFERENCES vendedores(id),
     tipo_ruta TEXT NOT NULL CHECK (tipo_ruta IN ('FORANEA','LOCAL')), plazo_dias INTEGER NOT NULL CHECK (plazo_dias > 0),
-    estado_fisico TEXT NOT NULL DEFAULT '', notas TEXT NOT NULL DEFAULT '', activa INTEGER NOT NULL DEFAULT 1, creada TEXT NOT NULL);
+    estado_fisico TEXT NOT NULL DEFAULT '', notas TEXT NOT NULL DEFAULT '', activa INTEGER NOT NULL DEFAULT 1, creada TEXT NOT NULL,
+    plantilla_excel TEXT);
 CREATE TABLE IF NOT EXISTS zonas (
     route_id TEXT NOT NULL REFERENCES rutas(route_id), prefijo TEXT NOT NULL, nombre TEXT NOT NULL, PRIMARY KEY (route_id, prefijo));
 CREATE TABLE IF NOT EXISTS clientes_ruta (
@@ -95,6 +96,8 @@ class Estado:
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         with self.tx() as c:
             c.executescript(DDL)
+            if "plantilla_excel" not in [r["name"] for r in c.execute("PRAGMA table_info(rutas)")]:  # migracion de BD creadas antes de esta columna
+                c.execute("ALTER TABLE rutas ADD COLUMN plantilla_excel TEXT")
             c.execute("INSERT OR IGNORE INTO meta(clave, valor) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     @contextmanager
@@ -282,7 +285,7 @@ class Estado:
     # ------------------------------------------------------------------ catalogo: rutas, zonas, clientes
     def guardar_ruta(self, actor: Optional[dict], route_id: str, nombre: str, vendedor: str, tipo_ruta: str, plazo_dias: Optional[int] = None,
                      zonas: Optional[Dict[str, str]] = None, clientes: Optional[List[dict]] = None, estado_fisico: str = "", notas: str = "",
-                     reemplazar_clientes: bool = True) -> dict:
+                     reemplazar_clientes: bool = True, plantilla_excel: Optional[str] = None) -> dict:
         route_id = re.sub(r"[^A-Z0-9_]", "_", route_id.strip().upper())
         if not route_id or not nombre.strip():
             raise ErrorNegocio("route_id y nombre son obligatorios.")
@@ -296,11 +299,11 @@ class Estado:
             vid = self.asegurar_vendedor(c, vendedor)
             existe = c.execute("SELECT 1 FROM rutas WHERE route_id = ?", (route_id,)).fetchone()
             if existe:
-                c.execute("UPDATE rutas SET nombre=?, vendedor_id=?, tipo_ruta=?, plazo_dias=?, estado_fisico=?, notas=? WHERE route_id=?",
-                          (nombre.strip(), vid, tipo_ruta, plazo, estado_fisico, notas, route_id))
+                c.execute("UPDATE rutas SET nombre=?, vendedor_id=?, tipo_ruta=?, plazo_dias=?, estado_fisico=?, notas=?, plantilla_excel=COALESCE(?, plantilla_excel) WHERE route_id=?",
+                          (nombre.strip(), vid, tipo_ruta, plazo, estado_fisico, notas, plantilla_excel, route_id))
             else:
-                c.execute("INSERT INTO rutas(route_id, nombre, vendedor_id, tipo_ruta, plazo_dias, estado_fisico, notas, creada) VALUES (?,?,?,?,?,?,?,?)",
-                          (route_id, nombre.strip(), vid, tipo_ruta, plazo, estado_fisico, notas, self._t()))
+                c.execute("INSERT INTO rutas(route_id, nombre, vendedor_id, tipo_ruta, plazo_dias, estado_fisico, notas, creada, plantilla_excel) VALUES (?,?,?,?,?,?,?,?,?)",
+                          (route_id, nombre.strip(), vid, tipo_ruta, plazo, estado_fisico, notas, self._t(), plantilla_excel))
             if zonas is not None:
                 c.execute("DELETE FROM zonas WHERE route_id = ?", (route_id,))
                 for pref, nom in zonas.items():
@@ -352,6 +355,16 @@ class Estado:
             self.auditar(c, actor, "cliente_ruta.agregar", "ruta", route_id, {"codigo": codigo, "folder": folder})
         return {"route_id": route_id, "codigo": codigo, "folder": folder, "zona": zona}
 
+    def actualizar_nombres_clientes(self, actor: Optional[dict], route_id: str, nombres: Dict[str, str]) -> int:
+        """Actualiza SOLO el nombre (cosmetico) de clientes ya existentes en la ruta; no toca orden ni folders."""
+        n = 0
+        with self.tx() as c:
+            for cod, nombre in nombres.items():
+                n += c.execute("UPDATE clientes_ruta SET nombre = ? WHERE route_id = ? AND codigo = ? AND nombre <> ?", (nombre, route_id, cod.upper(), nombre)).rowcount
+            if n:
+                self.auditar(c, actor, "ruta.actualizar_nombres", "ruta", route_id, {"actualizados": n})
+        return n
+
     def quitar_cliente(self, actor: dict, route_id: str, codigo: str) -> None:
         """Retira el cliente de la ruta SIN renumerar y SIN reutilizar su folder (se conserva el hueco)."""
         with self.tx() as c:
@@ -359,6 +372,12 @@ class Estado:
             if not n:
                 raise ErrorNegocio("El cliente no está en la ruta.", 404)
             self.auditar(c, actor, "cliente_ruta.quitar", "ruta", route_id, {"codigo": codigo})
+
+    def asignar_plantilla_excel(self, actor: Optional[dict], route_id: str, plantilla: Optional[str]) -> None:
+        with self.tx() as c:
+            if not c.execute("UPDATE rutas SET plantilla_excel = ? WHERE route_id = ?", (plantilla, route_id)).rowcount:
+                raise ErrorNegocio("Ruta no encontrada.", 404)
+            self.auditar(c, actor, "ruta.plantilla_excel", "ruta", route_id, {"plantilla": plantilla})
 
     def desactivar_ruta(self, actor: dict, route_id: str, activa: bool) -> None:
         with self.tx() as c:

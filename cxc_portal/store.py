@@ -196,3 +196,80 @@ class PortalServicio:
         r = self.estado.guardar_ruta(actor, route_id, nombre, vendedor, tipo_ruta, plazo_dias, zonas=zonas or {}, clientes=filas)
         self.invalidar()
         return r
+
+    # ------------------------------------------------------------------ Excel de ruta (generador de CXC BOT)
+    def _config_excel(self, r: dict):
+        from cxc_bot.config import RouteNotFoundError, load_route_config
+        for nombre in filter(None, (r.get("plantilla_excel"), r["route_id"].replace("_", " "), r["nombre"].upper(), r["nombre"])):
+            try:
+                return load_route_config(nombre)
+            except RouteNotFoundError:
+                continue
+        raise ErrorNegocio("La ruta no tiene plantilla Excel configurada en config/routes.json (hoja principal, fila de encabezado, columnas).", 409)
+
+    def bases_excel(self) -> List[str]:
+        if self.data_dir is None or not (self.data_dir / "01_Rutas").is_dir():
+            return []
+        return sorted(p.name for p in (self.data_dir / "01_Rutas").glob("*.xlsx"))
+
+    def generar_excel(self, actor: dict, route_id: str, base: str, fecha_salida: str):
+        """Genera el Excel de la ruta con el MISMO generador de CXC BOT (formato operativo intacto): roster y folders desde la BD propia,
+        hoja de datos SAP desde la fuente actual. Es un BORRADOR mientras la fuente sea un snapshot. No modifica el archivo base."""
+        import shutil
+        import tempfile
+        from datetime import datetime
+
+        import openpyxl
+
+        from cxc_bot import excel_service, validators
+        from cxc_bot.models import ClientEntry, SapClientRecord
+
+        r = self.estado.obtener_ruta(route_id)
+        if not r or not r["activa"]:
+            raise ErrorNegocio("Ruta no encontrada.", 404)
+        if self.fuente is None or self.fuente.en_vivo:
+            raise ErrorNegocio("No hay un snapshot utilizable para llenar la hoja de datos SAP.", 409)
+        if self.data_dir is None:
+            raise ErrorNegocio("No hay directorio de datos configurado.", 400)
+        try:
+            fecha = datetime.strptime(fecha_salida, "%Y-%m-%d").date()
+        except ValueError as e:
+            raise ErrorNegocio("fecha_salida debe ser AAAA-MM-DD.") from e
+        carpeta = (self.data_dir / "01_Rutas").resolve()
+        origen = (carpeta / base).resolve()
+        if carpeta not in origen.parents or origen.suffix.lower() != ".xlsx" or not origen.is_file():
+            raise ErrorNegocio("Archivo base no válido: debe ser un .xlsx dentro de 01_Rutas del directorio de datos.", 400)
+        config = self._config_excel(r)
+        registros = [SapClientRecord(codigo=c, nombre=n, saldo=float(sal)) for c, n, sal in self.fuente.registros_sap()]
+        nombres_sap = {x.codigo.upper(): " ".join(x.nombre.upper().split()) for x in registros}
+        # Si el nombre de la ruta difiere del registrado en SAP, se conserva como nombre propio de la ruta (literal), no la formula.
+        roster = [ClientEntry(codigo=c["codigo"], folder=c["folder"],
+                              nombre_ruta=(c["nombre"] if c["nombre"] and " ".join(c["nombre"].upper().split()) != nombres_sap.get(c["codigo"].upper(), "") else None))
+                  for c in r["clientes"]]
+        with tempfile.TemporaryDirectory(prefix="cxc_xlsx_") as tmp:
+            tmp = Path(tmp)
+            # Formato operativo = SOLO las dos hojas (portada + datos SAP): se descartan hojas de trabajo/borrador EN LA COPIA.
+            wb = openpyxl.load_workbook(origen)
+            for nombre in list(wb.sheetnames):
+                if nombre not in (config.main_sheet, config.data_sheet):
+                    del wb[nombre]
+            base_tmp = tmp / "base.xlsx"
+            wb.save(base_tmp)
+            salida = tmp / "salida.xlsx"
+            try:
+                excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster)
+            except excel_service.ExcelServiceError as e:
+                raise ErrorNegocio(f"No se pudo generar el Excel: {e}", 409) from e
+            literales = {e.codigo.upper(): e.nombre_ruta for e in roster if e.nombre_ruta}
+            rep = validators.validate_workbook(salida, config, expected_date=fecha, expected_client_count=len(roster), folder_mode=True, nombres_literales=literales)
+            if not rep.ok:
+                raise ErrorNegocio("El Excel generado no pasó la validación: " + "; ".join(rep.errors[:5]), 409)
+            fuente_f = (self.fuente.fecha_corte.isoformat() if self.fuente else "sin-fuente")
+            nombre = f"{r['route_id']}_{fecha.isoformat()}_BORRADOR_snapshot_{fuente_f}.xlsx"
+            salidas = self.estado_dir / "salidas"
+            salidas.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(salida, salidas / nombre)
+            datos = salida.read_bytes()
+        with self.estado.tx() as c:
+            self.estado.auditar(c, actor, "excel.generar", "ruta", route_id, {"base": base, "fecha_salida": fecha_salida, "archivo": nombre, "clientes": len(roster)})
+        return datos, nombre, rep.warnings

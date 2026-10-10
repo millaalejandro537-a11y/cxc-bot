@@ -73,6 +73,9 @@ class FuenteSintetica:
     def saldo_abierto(self, codigo):
         return round(sum(f.total - f.aplicado_sap for f in self._f.get(codigo.upper(), []) if f.estado_sap == "O"), 2)
 
+    def registros_sap(self):
+        return [(c, self._n[c], self.saldo_abierto(c)) for c in sorted(self._n)]
+
     def documentos_abiertos(self):
         return [{"cliente": c, "id": f.id_factura, "numero": f.numero, "fecha": f.fecha_factura, "vence": f.vencimiento_sap, "total": f.total, "aplicado": f.aplicado_sap}
                 for c, fs in self._f.items() for f in fs if f.estado_sap == "O"]

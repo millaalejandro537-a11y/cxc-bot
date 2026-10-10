@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
-import { api, post, setCsrf } from './api.js'
+import { api, descargar, post, setCsrf } from './api.js'
 import { CLASES, Dot, ESTADO, FuenteBadge, Semaforo, fdate, money } from './ui.jsx'
 import { Admin, Auditoria } from './Admin.jsx'
 import { Reportes } from './Reportes.jsx'
@@ -60,7 +60,32 @@ function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente, capacidade
   )
 }
 
-function Ruta({ id, abrirCliente, volver }) {
+function GenerarExcel({ routeId }) {
+  const [bases, setBases] = useState([])
+  const [base, setBase] = useState('')
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10))
+  const [msg, setMsg] = useState(null)
+  useEffect(() => { api('/excel/bases').then((d) => { setBases(d.bases); setBase(d.bases[0] || '') }).catch(() => {}) }, [])
+  const generar = async () => {
+    setMsg(null)
+    try { const r = await descargar(`/rutas/${routeId}/generar-excel`, { base, fecha_salida: fecha }); setMsg(`Generado ${r.nombre}. ${r.aviso || ''}`) } catch (e) { setMsg(e.message) }
+  }
+  if (!bases.length) return null
+  return (
+    <details className="card">
+      <summary><b>Generar Excel de la ruta</b> <small className="muted">(borrador con saldos del snapshot)</small></summary>
+      <p className="muted small">Usa el generador de CXC BOT: conserva el formato operativo (dos hojas), el orden de folders de la ruta y deja el archivo base intacto. Con datos del snapshot es un BORRADOR, no una ruta operativa vigente.</p>
+      <div className="filtros">
+        <select value={base} onChange={(e) => setBase(e.target.value)} aria-label="Archivo base">{bases.map((b) => <option key={b}>{b}</option>)}</select>
+        <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} aria-label="Fecha de salida" />
+        <button onClick={generar}>Generar y descargar</button>
+      </div>
+      {msg && <p className="muted small">{msg}</p>}
+    </details>
+  )
+}
+
+function Ruta({ id, abrirCliente, volver, user }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
   const [zona, setZona] = useState('')
@@ -90,6 +115,7 @@ function Ruta({ id, abrirCliente, volver }) {
         <FuenteBadge fuente={ruta.fuente} />
       </header>
       <ul className="notas">{(ruta.fuente.notas || []).map((n) => <li key={n}>{n}</li>)}</ul>
+      {['admin', 'gerencia'].includes(user.rol) && <GenerarExcel routeId={id} />}
       <div className="filtros">
         <input placeholder="Buscar cliente, código o folder" value={q} onChange={(e) => setQ(e.target.value)} />
         <select value={zona} onChange={(e) => setZona(e.target.value)}>
@@ -356,7 +382,7 @@ export default function App() {
       <main>
         {err && <p className="error">No se pudo contactar la API: {err}</p>}
         {vista.t === 'panel' && <Panel rutas={rutas} enVivo={{ motivo: enVivo.frescura?.motivo || '' }} prioridades={prior} abrirRuta={(id) => ir({ t: 'ruta', id })} abrirCliente={(c) => ir({ t: 'cliente', c })} capacidades={fuente?.capacidades} />}
-        {vista.t === 'ruta' && <Ruta id={vista.id} abrirCliente={(c) => ir({ t: 'cliente', c })} volver={volver} />}
+        {vista.t === 'ruta' && <Ruta id={vista.id} abrirCliente={(c) => ir({ t: 'cliente', c })} volver={volver} user={user} />}
         {vista.t === 'cliente' && <Cliente codigo={vista.c} volver={volver} user={user} />}
         {vista.t === 'alertas' && <Alertas rutas={rutas} abrirCliente={(c) => ir({ t: 'cliente', c })} />}
         {vista.t === 'visitas' && (rutas.length ? <Visitas rutas={rutas} /> : <p className="muted">No hay rutas asignadas.</p>)}

@@ -35,6 +35,8 @@ def validate_workbook(
     expected_client_count: Optional[int] = None,
     expect_clear_observaciones: bool = True,
     expected_sap_count: Optional[int] = None,
+    folder_mode: bool = False,
+    nombres_literales: Optional[dict] = None,
 ) -> ValidationReport:
     errors: List[str] = []
     warnings: List[str] = []
@@ -62,7 +64,7 @@ def validate_workbook(
 
     # --- Estructura: encabezados de la tabla principal ---
     expected_headers = {
-        config.num_col: "#",
+        config.num_col: "Folder" if folder_mode else "#",
         config.code_col: "Codigo",
         config.factura_col: "No. Factura",
         config.obs_col: "Observacion",
@@ -87,10 +89,23 @@ def validate_workbook(
     if invalid_codes:
         errors.append(f"Codigos de cliente invalidos (no inician con 'C'): {invalid_codes}")
 
-    for i, row in enumerate(range(config.data_start_row, total_row), start=1):
-        num_val = ws_main[f"{config.num_col}{row}"].value
-        if num_val != i:
-            errors.append(f"Numeracion no consecutiva en fila {row}: es {num_val}, se esperaba {i}.")
+    if folder_mode:
+        # Folder fisico por zona ("<n> <PREFIJO>"): unicos; se permiten huecos (un cliente retirado no se renumera).
+        import re as _re
+        vistos = set()
+        for row in range(config.data_start_row, total_row):
+            num_val = ws_main[f"{config.num_col}{row}"].value
+            if not isinstance(num_val, str) or not _re.fullmatch(r"\d+ [A-Za-z]{1,4}", num_val.strip()):
+                errors.append(f"Folder invalido en fila {row}: {num_val!r} (se esperaba '<n> <zona>', ej. '1 LV').")
+            elif num_val.strip().upper() in vistos:
+                errors.append(f"Folder duplicado en fila {row}: {num_val!r}.")
+            else:
+                vistos.add(num_val.strip().upper())
+    else:
+        for i, row in enumerate(range(config.data_start_row, total_row), start=1):
+            num_val = ws_main[f"{config.num_col}{row}"].value
+            if num_val != i:
+                errors.append(f"Numeracion no consecutiva en fila {row}: es {num_val}, se esperaba {i}.")
 
     if expected_client_count is not None and len(roster) != expected_client_count:
         errors.append(f"Se esperaban {expected_client_count} clientes y hay {len(roster)}.")
@@ -99,7 +114,12 @@ def validate_workbook(
     for row in range(config.data_start_row, total_row):
         name_formula = ws_main[f"{config.name_col}{row}"].value
         saldo_formula = ws_main[f"{config.saldo_col}{row}"].value
+        literal_ok = (nombres_literales or {}).get(str(ws_main[f"{config.code_col}{row}"].value).strip().upper())
         for label, formula in (("nombre", name_formula), ("saldo", saldo_formula)):
+            if label == "nombre" and literal_ok is not None:  # nombre propio de la ruta (distinto al de SAP): debe ser exactamente ese literal
+                if formula != literal_ok:
+                    errors.append(f"Fila {row}: el nombre propio de la ruta es {formula!r}, se esperaba {literal_ok!r}.")
+                continue
             if not isinstance(formula, str) or not formula.startswith("="):
                 errors.append(f"Fila {row}: la formula de {label} no existe o no es formula ({formula!r}).")
                 continue

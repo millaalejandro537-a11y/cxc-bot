@@ -33,11 +33,16 @@ class ClientEntry:
     no_factura: Optional[str] = None
     observacion: Optional[str] = None
     componente: Optional[str] = None
+    # Folder fisico por zona ("1 LV", "3 PB"...). None = numeracion correlativa clasica (comportamiento historico).
+    # Si se informa, el generador escribe este texto en la columna de numero en lugar de i+1.
+    folder: Optional[str] = None
+    # Nombre para la ruta cuando difiere del registrado en SAP (p. ej. se renombro la zona del cliente). None = formula VLOOKUP al nombre SAP.
+    nombre_ruta: Optional[str] = None
 
     def clone(self) -> "ClientEntry":
         return ClientEntry(
             codigo=self.codigo, no_factura=self.no_factura,
-            observacion=self.observacion, componente=self.componente,
+            observacion=self.observacion, componente=self.componente, folder=self.folder, nombre_ruta=self.nombre_ruta,
         )
 
 

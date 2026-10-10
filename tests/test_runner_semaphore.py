@@ -98,4 +98,4 @@ def test_un_fallo_de_la_fuente_de_evidencia_no_tumba_la_generacion(routes_root, 
 def test_las_vegas_y_yoro_tienen_plazo_foraneo_de_60_dias_y_las_demas_no():
     rutas = load_all_routes()
     assert rutas["LAS VEGAS"].credit_days == 60 and rutas["YORO"].credit_days == 60
-    assert all(c.credit_days is None for k, c in rutas.items() if k not in ("LAS VEGAS", "YORO"))
+    assert all(c.credit_days is None for k, c in rutas.items() if k not in ("LAS VEGAS", "YORO", "YORO FOLDERS"))

@@ -319,6 +319,20 @@ def visita_eventos(ctx: Contexto, p: Peticion):
     return Respuesta(datos={"visita": v, "eventos": ctx.estado.eventos_visita(v["id"])})
 
 
+# ----------------------------------------------------------------------------- Excel de ruta (generador de CXC BOT)
+@endpoint("GET", "/api/excel/bases", roles=LECTURA_GLOBAL)
+def excel_bases(ctx: Contexto, p: Peticion):
+    return Respuesta(datos={"bases": ctx.servicio.bases_excel()})
+
+
+@endpoint("POST", "/api/rutas/{rid}/generar-excel", roles=LECTURA_GLOBAL)
+def generar_excel(ctx: Contexto, p: Peticion):
+    datos, nombre, avisos = ctx.servicio.generar_excel(p.usuario, p.params["rid"], _cuerpo_str(p, "base"), _cuerpo_str(p, "fecha_salida"))
+    return Respuesta(cuerpo=datos, tipo="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     cabeceras={"Content-Disposition": f'attachment; filename="{nombre}"',
+                                "X-Cxc-Aviso": "BORRADOR: saldos del snapshot historico, no en vivo. No usar como ruta operativa vigente."})
+
+
 # ----------------------------------------------------------------------------- reportes gerenciales (cxc-reporting-core)
 def _reporting(ctx: Contexto):
     if ctx.servicio.reporting is None:
