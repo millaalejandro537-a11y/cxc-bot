@@ -11,3 +11,8 @@ data/config_versions.sqlite3
 data/*.tmp
 samples/RUTA VENDEDORES/**/*octubre*.xlsx
 n8n/.env
+
+# Portal CxC: snapshots reales (clientes/saldos) y artefactos de frontend
+data/portal/
+portal-web/node_modules/
+portal-web/dist/

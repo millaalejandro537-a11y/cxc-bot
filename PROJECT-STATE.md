@@ -50,3 +50,9 @@ Credencial SELECT de BLC → inspección de esquema solo lectura → adaptador d
 
 `python -m pytest tests/ -q` con el venv `C:\Users\LTP\Documents\Codex\environments\cxc-bot-windows\.venv`. 
 Último resultado completo (2026-10-09, antes del commit): **290 passed, 1 skipped** (test POSIX conocido en Windows), 165.7 s. Antes de este trabajo: 229 passed, 1 skipped. El hash del commit está en `git log`.
+
+## Portal CxC MVP (2026-10-09, sin deploy, sin push)
+
+Detalle en `docs/PORTAL-MVP.md`. Nuevo: `cxc_bot/payment_semaphore.py` (**único motor vigente del semáforo**, reglas 09/10), `cxc_portal/` (API Python solo lectura), `portal-web/` (React+Vite). `payment_behavior.evaluate_client` queda **deprecado** (reglas superadas; solo se conservan sus primitivas).
+- Datos privados FUERA de Git: `C:\Users\LTP\Documents\CxC-Datos-Privados\2026-10-08` (consultas SAP 08/10 + Excel aprobados). El motor reproduce los Excel aprobados: 55/55 clientes y todas las facturas de Las Vegas. La regresión con esos datos solo corre con `CXC_DATOS_DIR` (se omite sin él).
+- Pendiente: que CXC BOT consuma `payment_semaphore` en la generación de rutas; credencial SELECT; auth real; BD propia de visitas; deploy. `cxc-reporting-core` no se tocó.

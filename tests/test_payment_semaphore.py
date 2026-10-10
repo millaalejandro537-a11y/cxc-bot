@@ -1,0 +1,133 @@
+from datetime import date, timedelta
+
+import pytest
+
+from cxc_bot import payment_semaphore as ps
+
+CORTE = date(2026, 10, 8)
+
+
+def fac(n, emision, mora=None, plazo=60, total=1000.0, estado="C", recibos=None, venc_sap=None):
+    """Pagada con `mora` dias de atraso (recibo unico por el total), o la que se indique en `recibos`."""
+    if recibos is None and mora is not None:
+        recibos = (ps.Recibo(f"R{n}", emision + timedelta(days=plazo + mora), total),)
+    return ps.FacturaSAP(str(n), str(n), emision, venc_sap or emision + timedelta(days=30), total,
+                         total if estado == "C" else 0.0, estado, tuple(recibos or ()))
+
+
+def serie(moras, ini=date(2025, 1, 1), paso=20, **kw):
+    return [fac(i + 1, ini + timedelta(days=paso * i), m, **kw) for i, m in enumerate(moras)]
+
+
+def ev(facturas, plazo=60, dec=None):
+    return ps.evaluar_cliente("C1", facturas, CORTE, plazo, dec)
+
+
+def test_menos_de_4_en_historial_es_prueba_aunque_haya_mora():
+    r = ev(serie([0, 300, 0]))
+    assert r.calculado == ps.EN_PRUEBA and r.color_final == "BLANCO"
+
+
+def test_historial_cuenta_pagadas_y_abiertas():
+    r = ev(serie([0, 0]) + [fac(90, CORTE - timedelta(days=100), estado="O"), fac(91, CORTE - timedelta(days=90), estado="O")])
+    assert r.calculado != ps.EN_PRUEBA and r.historial_total == 4
+
+
+@pytest.mark.parametrize("mora,esperado", [(0, "A"), (5, "A"), (6, "B"), (15, "B"), (16, "C"), (60, "C"), (61, ps.CANDIDATO_SOLO_CONTADO)])
+def test_umbrales(mora, esperado):
+    assert ev(serie([mora] * 4)).calculado == esperado
+
+
+def test_media_no_se_redondea():
+    r = ev(serie([5, 6, 5, 6]))
+    assert r.promedio_mora == 5.5 and r.calculado == "B"
+
+
+def test_pago_anticipado_cuenta_cero_no_negativo():
+    r = ev(serie([-40, -30, 10, 10]))
+    assert r.promedio_mora == 5.0 and r.calculado == "A"
+
+
+def test_solo_las_10_mas_recientes_y_desempate_por_numero_desc():
+    r = ev(serie([200, 200, 200] + [0] * 10))
+    assert r.en_ventana == 10 and r.historial_total == 13 and r.calculado == "A"
+    mismo = date(2026, 1, 1)
+    r2 = ev([fac(n, mismo, 0) for n in (5, 100, 20)] + serie([0] * 9))
+    assert [f.numero for f in r2.facturas][:3] == ["100", "20", "5"]
+
+
+def test_abierta_mas_de_5_dias_entra_y_hasta_5_no_entra():
+    base = serie([10, 10])
+    r = ev(base + [fac(90, CORTE - timedelta(days=63), estado="O"), fac(91, CORTE - timedelta(days=66), estado="O")])  # mora 3 y 6
+    assert r.evaluables == 3 and r.suma_mora == 26 and r.abiertas == 2
+    ab = {f.numero: f for f in r.facturas}
+    assert not ab["90"].en_media and ps.EXC_ABIERTA_SIN_ATRASO in ab["90"].excepciones and ab["91"].en_media and ab["91"].mora == 6
+
+
+def test_cierre_sin_cobro_integro_no_es_pago_ni_nota_de_credito_es_pago():
+    nc = fac(90, date(2025, 6, 1), estado="C", recibos=())             # cerrada por nota de credito, sin recibos
+    parcial = fac(91, date(2025, 7, 1), estado="C", total=1000.0, recibos=(ps.Recibo("R", date(2025, 8, 1), 400.0),))
+    r = ev(serie([0, 0, 0]) + [nc, parcial])
+    assert r.no_acreditadas == 2 and r.evaluables == 3
+    assert all(f.estado == ps.CERRADA_NO_ACREDITADA and not f.en_media for f in r.facturas if f.numero in ("90", "91"))
+
+
+def test_recibo_anterior_a_la_emision_no_respalda_el_pago():
+    emision = date(2025, 8, 1)
+    f = fac(50, emision, estado="C", total=1000.0, recibos=(
+        ps.Recibo("R1", emision - timedelta(days=300), 60.0, "consulta 2"), ps.Recibo("R2", emision + timedelta(days=5), 940.0)))
+    r = ev(serie([0, 0, 0]) + [f])
+    ef = next(x for x in r.facturas if x.numero == "50")
+    assert ef.estado == ps.CERRADA_NO_ACREDITADA and ps.EXC_RECIBO_ANTERIOR_A_EMISION in ef.excepciones
+
+
+def test_pago_en_varios_recibos_usa_el_ultimo_y_exige_el_total():
+    e = date(2025, 1, 1)
+    f = fac(7, e, estado="C", total=1000.0, recibos=(ps.Recibo("a", e + timedelta(days=10), 400.0), ps.Recibo("b", e + timedelta(days=90), 600.0)))
+    ef = next(x for x in ev(serie([0, 0, 0]) + [f]).facturas if x.numero == "7")
+    assert ef.estado == ps.PAGADA and ef.mora == 30 and ef.ultimo_recibo == e + timedelta(days=90)
+
+
+def test_el_plazo_de_la_ruta_manda_no_el_vencimiento_sap():
+    f = [fac(i, date(2026, 1, 1) + timedelta(days=i * 10), None, recibos=(ps.Recibo("r", date(2026, 1, 1) + timedelta(days=i * 10 + 40), 1000.0),),
+             venc_sap=date(2026, 1, 1) + timedelta(days=i * 10 + 365)) for i in range(4)]
+    assert ev(f, plazo=60).promedio_mora == 0.0 and ev(f, plazo=30).promedio_mora == 10.0
+    assert ev(f).facturas[0].vencimiento_sap is not None  # SAP se conserva para cotejo
+
+
+def test_sin_base_para_la_media_va_a_revision_humana():
+    r = ev([fac(i, date(2025, 1, 1) + timedelta(days=i), estado="C", recibos=()) for i in range(5)])
+    assert r.calculado == ps.REVISION_HUMANA and r.requiere_gerencia
+
+
+def test_candidato_no_es_rojo_y_requiere_gerencia():
+    r = ev(serie([90] * 5))
+    assert r.final == ps.CANDIDATO_SOLO_CONTADO and r.color_final == "PENDIENTE_GERENCIA" and r.requiere_gerencia
+
+
+def test_override_conserva_calculo_automatico_y_traza():
+    dec = ps.DecisionGerencia("C", "Mal cobro de un vendedor anterior.", "Gerencia", "2026-10-09")
+    r = ev(serie([113] * 5), dec=dec)
+    assert r.calculado == ps.CANDIDATO_SOLO_CONTADO and r.promedio_mora == 113.0 and r.alertas
+    assert r.final == "C" and r.color_final == "AMARILLO" and r.decision_gerencia.fecha == "2026-10-09"
+    d = r.to_dict()
+    assert d["calculado"] == "CANDIDATO_SOLO_CONTADO" and d["decision_gerencia"]["actor"] == "Gerencia"
+
+
+def test_alerta_mayor_60_aunque_la_media_sea_buena():
+    # una factura abierta con 61+ dias entre varias puntuales: B/A en media, alerta individual igual
+    r = ev(serie([0] * 12) + [fac(99, CORTE - timedelta(days=60 + 75), estado="O")])
+    assert r.alertas and "75" in r.alertas[0] and r.calculado in ("A", "B", "C")
+    assert next(f for f in r.facturas if f.numero == "99").alerta_mayor_60
+
+
+def test_evidencia_por_factura_expone_recibos_y_motivo():
+    r = ev(serie([3, 3, 3, 3]))
+    f = r.facturas[0].to_dict()
+    assert f["recibos"] and f["estado"] == "PAGADA" and f["motivo"] and f["vencimiento_ruta"] and f["vencimiento_sap"]
+
+
+def test_motor_antiguo_esta_deprecado_y_el_unico_vigente_es_payment_semaphore():
+    from cxc_bot import payment_behavior as pb
+    with pytest.warns(DeprecationWarning, match="payment_semaphore"):
+        pb.evaluate_client("X", [], CORTE)

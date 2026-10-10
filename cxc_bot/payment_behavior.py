@@ -1,5 +1,10 @@
 """Comportamiento de pago: semaforo por factura y clasificacion del cliente.
 
+DEPRECADO (2026-10-09): `evaluate_client` / `evaluate_portfolio` implementan reglas SUPERADAS (predominio y minimo de 4
+facturas PAGADAS). El UNICO motor vigente es `cxc_bot.payment_semaphore` (ultimas 10 facturas, >= 4 en todo el historial,
+media de mora >= 0, override de gerencia con evidencia por factura). Este modulo se conserva solo por sus primitivas
+(`InvoiceRecord`, `assess_invoice`, `CreditPolicy`) y por compatibilidad; NO debe dirigir decisiones productivas.
+
 Modulo PURO: recibe facturas ya leidas (de la fuente que sea) y devuelve
 evaluaciones. No lee SAP ni Cosprobell BD, no abre Excel, no escribe nada y
 no cambia viñetas ni credito: solo PROPONE. La viñeta roja y cualquier
@@ -39,6 +44,7 @@ Supuestos que NO estaban cerrados y quedan explicitos (ver PROJECT-STATE):
 
 from __future__ import annotations
 
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -278,6 +284,8 @@ def evaluate_client(
     rules: BehaviorRules = BehaviorRules(),
     fecha_conversacion: Optional[date] = None,
 ) -> ClientAssessment:
+    warnings.warn("payment_behavior.evaluate_client usa reglas superadas; usar cxc_bot.payment_semaphore.evaluar_cliente",
+                  DeprecationWarning, stacklevel=2)
     assessed = sorted(
         (assess_invoice(i, fecha_corte, policy, rules) for i in invoices), key=_order_key
     )
