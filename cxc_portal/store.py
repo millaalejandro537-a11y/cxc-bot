@@ -82,6 +82,7 @@ class PortalServicio:
         self.estado, self.fuente, self.estado_dir = estado, fuente, Path(estado_dir)
         self.reporting, self.data_dir = reporting, (Path(data_dir) if data_dir else None)
         self._cache: Optional[Dict[str, Ruta]] = None
+        self._version = -1
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ fuente
@@ -134,9 +135,12 @@ class PortalServicio:
         return out
 
     def rutas(self) -> Dict[str, Ruta]:
+        # La cache se invalida sola si OTRO proceso (CLI admin, integrar-ruta) cambia el catalogo o las decisiones en la BD compartida.
+        v = self.estado.version_catalogo()
         with self._lock:
-            if self._cache is None:
+            if self._cache is None or v != self._version:
                 self._cache = self._evaluar()
+                self._version = v
             return self._cache
 
     def ruta(self, route_id: str) -> Optional[Ruta]:

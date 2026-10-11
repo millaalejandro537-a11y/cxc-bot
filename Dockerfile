@@ -11,13 +11,13 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=America/Tegucigalpa PORT=808
 RUN useradd --create-home --uid 10001 app && mkdir -p /data/estado /data/datos && chown -R app /data
 WORKDIR /app
 # Dependencias de ejecucion FIJADAS (requirements.txt incluye pytest, que no va en produccion). tzdata explicito: no depender del sistema base.
-RUN pip install --no-cache-dir "openpyxl==3.1.5" "tzdata==2025.2"
+RUN pip install --no-cache-dir "openpyxl==3.1.5" "tzdata==2025.2" "cryptography==50.0.2"
 COPY cxc_bot ./cxc_bot
 COPY cxc_portal ./cxc_portal
 COPY config ./config
-COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY deploy/entrypoint.sh deploy/respaldo.sh /usr/local/bin/
 COPY --from=web /web/dist ./portal-web/dist
-RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod 755 /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/respaldo.sh && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/respaldo.sh
 # cxc-reporting-core: NO se copia ni se duplica aqui. Se instala FIJADO a un commit desde su propio repositorio privado (ver docs/NUBE-ALOJAMIENTO.md):
 #   ARG CORE_REF=<commit> ; RUN pip install "git+https://<deploy-token>@github.com/millaalejandro537-a11y/cxc-reporting-core@${CORE_REF}"
 # y se deja CXC_REPORTING_SRC vacio. Mientras tanto el portal funciona sin reportes del core (responde 503 en /api/reportes/*).

@@ -140,6 +140,72 @@ def cmd_integrar_ruta(a) -> int:
     return 0
 
 
+def _contrasena_privada(confirmar: bool = False) -> str:
+    """La contraseña de la clave privada NUNCA va como argumento: variable de entorno CXC_CLAVE_PRIVADA_PASS o teclado."""
+    v = os.environ.get("CXC_CLAVE_PRIVADA_PASS")
+    if v:
+        return v
+    v = getpass.getpass("Contraseña de la clave privada de respaldos: ")
+    if confirmar and v != getpass.getpass("Repita la contraseña: "):
+        raise SystemExit("Las contraseñas no coinciden.")
+    return v
+
+
+def _leer(path) -> bytes:
+    return Path(path).read_bytes()
+
+
+def cmd_generar_claves_respaldo(a) -> int:
+    from . import respaldo_cifrado as rc
+    pub, priv = Path(a.publica), Path(a.privada)
+    if pub.exists() or priv.exists():
+        raise SystemExit("Ya existe el archivo de clave indicado: no se sobrescribe.")
+    try:
+        pem_pub, pem_priv, kid = rc.generar_par_claves(_contrasena_privada(confirmar=True), a.bits)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    pub.write_bytes(pem_pub)
+    priv.write_bytes(pem_priv)
+    for f in (priv,):
+        try:
+            os.chmod(f, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    print(f"Par de claves creado (id {kid}). La PÚBLICA va al servidor/tarea; la PRIVADA y su contraseña se guardan fuera de línea, en lugares distintos. Sin ellas los respaldos no se pueden recuperar.")
+    return 0
+
+
+def cmd_respaldar_cifrado(a) -> int:
+    from . import respaldo_cifrado as rc
+    try:
+        r = rc.ejecutar_ciclo(_estado(a), [_leer(p) for p in a.publica], Path(a.destino), a.diarios, a.mensuales)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(f"Respaldo cifrado: {r['archivo']} ({r['bytes']} bytes, destinatarios {', '.join(r['destinatarios'])}); rotados: {len(r['rotados'])}.")
+    return 0
+
+
+def cmd_restaurar_cifrado(a) -> int:
+    from . import respaldo_cifrado as rc
+    try:
+        d = rc.restaurar_cifrado(Path(a.archivo), _leer(a.privada), _contrasena_privada(), Path(a.estado) / "portal.sqlite3", a.forzar)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    problemas = Estado(d).verificar_documentos()
+    print(f"Restaurado en {d}. Documentos verificados contra sus hashes: {'todos coinciden' if not problemas else 'PROBLEMAS: ' + '; '.join(problemas)}. Reinicie el portal.")
+    return 1 if problemas else 0
+
+
+def cmd_verificar_respaldo(a) -> int:
+    from . import respaldo_cifrado as rc
+    try:
+        r = rc.verificar_restauracion(Path(a.archivo), _leer(a.privada), _contrasena_privada())
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(f"Prueba de restauración OK (en carpeta temporal, ya eliminada): integridad {r['integridad']}, {r['documentos_verificados']} documento(s) verificados, tablas {r['tablas']}.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -174,6 +240,28 @@ def main(argv=None) -> int:
     p.add_argument("--confirmar", action="store_true")
     p.add_argument("--proponer-clientes", action="store_true")
     p.set_defaults(func=cmd_importar_documento)
+    p = sub.add_parser("generar-claves-respaldo")
+    p.add_argument("--publica", required=True)
+    p.add_argument("--privada", required=True)
+    p.add_argument("--bits", type=int, default=4096)
+    p.set_defaults(func=cmd_generar_claves_respaldo)
+    p = sub.add_parser("respaldar-cifrado")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--destino", required=True)
+    p.add_argument("--publica", required=True, action="append", help="Clave pública de un destinatario (repetible: varios custodios)")
+    p.add_argument("--diarios", type=int, default=14)
+    p.add_argument("--mensuales", type=int, default=6)
+    p.set_defaults(func=cmd_respaldar_cifrado)
+    p = sub.add_parser("restaurar-cifrado")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--archivo", required=True)
+    p.add_argument("--privada", required=True)
+    p.add_argument("--forzar", action="store_true")
+    p.set_defaults(func=cmd_restaurar_cifrado)
+    p = sub.add_parser("verificar-respaldo")
+    p.add_argument("--archivo", required=True)
+    p.add_argument("--privada", required=True)
+    p.set_defaults(func=cmd_verificar_respaldo)
     p = sub.add_parser("integrar-ruta")
     p.add_argument("--estado", required=True)
     p.add_argument("--ruta", required=True)

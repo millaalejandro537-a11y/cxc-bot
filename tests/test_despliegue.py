@@ -123,7 +123,10 @@ def test_archivos_de_despliegue_son_coherentes():
     assert not re.search(r"^RUN .*pytest", docker, re.M)
     entry = (RAIZ / "deploy" / "entrypoint.sh").read_bytes()
     assert entry.startswith(b"#!/bin/sh\n") and b"\r" not in entry and b"setpriv --reuid=10001" in entry
-    assert "10001" in docker                                                             # mismo UID que el entrypoint
+    resp = (RAIZ / "deploy" / "respaldo.sh").read_bytes()
+    assert re.search(r'"cryptography==\d', docker) and "respaldo.sh" in docker          # respaldos cifrados: biblioteca fijada y script en la imagen
+    assert b"\r" not in resp and resp.startswith(b"#!/bin/sh\n")
+    assert "10001" in docker                                                            # mismo UID que el entrypoint
     assert "eol=lf" in (RAIZ / ".gitattributes").read_text(encoding="utf-8")
     toml = (RAIZ / "railway.toml").read_text(encoding="utf-8")
     assert 'healthcheckPath = "/api/health"' in toml and "numReplicas = 1" in toml       # SQLite: una sola instancia

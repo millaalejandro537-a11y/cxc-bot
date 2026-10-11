@@ -104,7 +104,23 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 c.execute("ALTER TABLE rutas ADD COLUMN plantilla_excel TEXT")
             c.executescript(DDL_DOCS)
             migrar(c)  # salidas, hojas de visita, candidatos, folders permanentes, 2FA y columnas nuevas
+            self._disparadores_catalogo(c)
             c.execute("INSERT OR IGNORE INTO meta(clave, valor) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+
+    # Tablas que alimentan las rutas evaluadas que el servidor mantiene en memoria. Un disparador por tabla suma a `cambios` ante cualquier
+    # INSERT/UPDATE/DELETE, venga de la API o de OTRO proceso (CLI admin, integrar-ruta): el servidor compara este contador y recalcula.
+    TABLAS_CATALOGO = ("vendedores", "rutas", "zonas", "clientes_ruta", "decisiones")
+
+    def _disparadores_catalogo(self, c) -> None:
+        c.execute("CREATE TABLE IF NOT EXISTS cambios (tabla TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)")
+        for t in self.TABLAS_CATALOGO:
+            c.execute("INSERT OR IGNORE INTO cambios(tabla) VALUES (?)", (t,))
+            for sufijo, evento in (("i", "INSERT"), ("u", "UPDATE"), ("d", "DELETE")):
+                c.execute(f"CREATE TRIGGER IF NOT EXISTS trg_cambios_{t}_{sufijo} AFTER {evento} ON {t} BEGIN UPDATE cambios SET n = n + 1 WHERE tabla = '{t}'; END")
+
+    def version_catalogo(self) -> int:
+        with self.tx() as c:
+            return c.execute("SELECT COALESCE(SUM(n), 0) FROM cambios").fetchone()[0]
 
     @contextmanager
     def tx(self):
