@@ -102,11 +102,12 @@ def _empaquetar(carpeta: Path) -> bytes:
     if bd is None:
         raise ErrorNegocio("No se encontró la copia de la BD a empaquetar.", 500)
     archivos: Dict[str, Path] = {"portal.sqlite3": bd}
-    docs = carpeta / "documentos"
-    if docs.is_dir():
-        for f in sorted(docs.rglob("*")):
-            if f.is_file():
-                archivos["documentos/" + f.relative_to(docs).as_posix()] = f
+    for sub in ("documentos", "rutas_excel"):
+        docs = carpeta / sub
+        if docs.is_dir():
+            for f in sorted(docs.rglob("*")):
+                if f.is_file():
+                    archivos[sub + "/" + f.relative_to(docs).as_posix()] = f
     manifest = {"formato": "cxc-respaldo/1", "archivos": {n: hashlib.sha256(p.read_bytes()).hexdigest() for n, p in archivos.items()}}
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -175,7 +176,7 @@ def extraer(archivo: Path, pem_privada: bytes, contrasena: str, destino: Path) -
             if set(manifest["archivos"]) != set(miembros) - {"manifest.json"} or "portal.sqlite3" not in manifest["archivos"]:
                 raise ErrorNegocio("El manifiesto no coincide con el contenido del respaldo.", 400)
             for nombre, esperado in manifest["archivos"].items():
-                if nombre.startswith("/") or ".." in Path(nombre).parts or not (nombre == "portal.sqlite3" or nombre.startswith("documentos/")):
+                if nombre.startswith("/") or ".." in Path(nombre).parts or not (nombre == "portal.sqlite3" or nombre.startswith(("documentos/", "rutas_excel/"))):
                     raise ErrorNegocio(f"Nombre de archivo no permitido en el respaldo: {nombre}", 400)
                 datos = tar.extractfile(miembros[nombre]).read()
                 if hashlib.sha256(datos).hexdigest() != esperado:

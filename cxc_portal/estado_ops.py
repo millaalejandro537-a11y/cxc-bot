@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS candidatos (
 COLUMNAS_NUEVAS = {
     "rutas": [("requiere_hojas_visita", "INTEGER NOT NULL DEFAULT 0"), ("numeracion_folders", "TEXT NOT NULL DEFAULT 'ZONA'"),
               ("implantacion", "TEXT NOT NULL DEFAULT 'OPERATIVA'")],
+    "visitas": [("cobro", "REAL"), ("venta", "REAL")],
     "usuarios": [("totp_secret", "TEXT"), ("totp_activo", "INTEGER NOT NULL DEFAULT 0"), ("recovery_hashes", "TEXT"), ("totp_ultimo_paso", "INTEGER NOT NULL DEFAULT 0")],
 }
 
@@ -315,12 +316,20 @@ class OperacionesMixin:
         filas = []
         cuenta = {e: 0 for e in ESTADOS_VISITA}
         cuenta["pendiente"] = 0
+        cobro = venta = 0.0
         for cl in clientes:
             v = vis.get(cl["codigo"])
             est = v["estado"] if v else "pendiente"
             cuenta[est] += 1
-            filas.append({**cl, "estado": est, "motivo": v["motivo"] if v else "", "observacion": v["observacion"] if v else ""})
-        return {"salida_id": sid, "route_id": s["route_id"], "fecha_salida": s["fecha_salida"], "estado": s["estado"], "resumen": cuenta, "clientes": filas}
+            cobro += (v["cobro"] or 0) if v else 0
+            venta += (v["venta"] or 0) if v else 0
+            filas.append({**cl, "estado": est, "motivo": v["motivo"] if v else "", "observacion": v["observacion"] if v else "",
+                          "cobro": v["cobro"] if v else None, "venta": v["venta"] if v else None})
+        visitados = cuenta["visitada_firmada"] + cuenta["visitada_sin_firma"]
+        return {"salida_id": sid, "route_id": s["route_id"], "fecha_salida": s["fecha_salida"], "estado": s["estado"], "resumen": cuenta, "clientes": filas,
+                "totales": {"cobro_declarado": round(cobro, 2), "venta_declarada": round(venta, 2), "visitados": visitados, "clientes": len(clientes),
+                            "cumplimiento": round(visitados / len(clientes), 4) if clientes else None,
+                            "nota": "Cobros y ventas son montos declarados en campo; no provienen de SAP ni sustituyen la conciliación."}}
 
     def omisiones_consecutivas(self, route_id: str, n: int = 3) -> dict:
         """Clientes no visitados en las ULTIMAS n salidas (evidencia concluyente) y clientes sin registro en salidas cerradas (revisar).

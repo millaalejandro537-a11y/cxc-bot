@@ -66,6 +66,8 @@ class Contexto:
         self.confiar_proxy = confiar_proxy
         self.proxy_saltos = max(1, int(proxy_saltos))      # proxies de confianza delante de la app (X-Forwarded-For: se toma la entrada que ellos agregaron)
         self.limitador = limitador or sec.LimitadorIntentos()
+        from .flujo import FlujoOperativo
+        self.flujo = FlujoOperativo(servicio)
 
 
 class Peticion:
@@ -368,8 +370,18 @@ def visitas(ctx: Contexto, p: Peticion):
 @endpoint("POST", "/api/visitas")
 def visita_registrar(ctx: Contexto, p: Peticion):
     r = _ruta_visible(ctx, p.usuario, _cuerpo_str(p, "ruta"))
+    def monto(k):
+        v = p.cuerpo.get(k)
+        if v in (None, ""):
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            raise ErrorNegocio(f"El {k} debe ser numérico.")
+        try:
+            return round(float(v), 2)
+        except ValueError as e:
+            raise ErrorNegocio(f"El {k} debe ser numérico.") from e
     v = ctx.estado.registrar_visita(p.usuario, r.route_id, _cuerpo_str(p, "fecha_salida"), _cuerpo_str(p, "codigo"), _cuerpo_str(p, "estado"),
-                                    _cuerpo_str(p, "motivo", False), _cuerpo_str(p, "observacion", False))
+                                    _cuerpo_str(p, "motivo", False), _cuerpo_str(p, "observacion", False), monto("cobro"), monto("venta"))
     return Respuesta(201, v)
 
 
@@ -419,7 +431,8 @@ def salida_detalle(ctx: Contexto, p: Peticion):
 
 @endpoint("POST", "/api/salidas/{sid}/preparar", roles=LECTURA_GLOBAL)
 def salida_preparar(ctx: Contexto, p: Peticion):
-    return Respuesta(datos=ctx.servicio.preparar_salida(p.usuario, int(p.params["sid"])))
+    _salida_visible(ctx, p)
+    return Respuesta(datos=ctx.flujo.preparar(p.usuario, int(p.params["sid"])))
 
 
 @endpoint("POST", "/api/salidas/{sid}/revisar", roles=LECTURA_GLOBAL)
@@ -752,6 +765,134 @@ def _estado_auditar(ctx: Contexto):
         with ctx.estado.tx() as c:
             ctx.estado.auditar(c, p.usuario, accion, "reporte", referencia, None, p.ip)
     return f
+
+
+
+# ----------------------------------------------------------------------------- calendario, ciclo de salidas, avisos, Excel versionado, dashboard
+@endpoint("GET", "/api/calendario")
+def calendario(ctx: Contexto, p: Peticion):
+    vis = _visibles(ctx, p.usuario)
+    rid = p.q("ruta")
+    if rid and rid not in vis:
+        raise ErrorNegocio("Ruta no encontrada.", 404)
+    return Respuesta(datos=ctx.flujo.calendario_salidas(vis, p.q("desde") or None, p.q("hasta") or None, rid, p.q("vendedor") if p.usuario["rol"] != VEN else "", p.q("periodo")))
+
+
+@endpoint("POST", "/api/salidas/serie", roles=LECTURA_GLOBAL)
+def salidas_serie(ctx: Contexto, p: Peticion):
+    fechas = p.cuerpo.get("fechas")
+    if not isinstance(fechas, list) or not fechas or len(fechas) > 62 or not all(isinstance(f, str) for f in fechas):
+        raise ErrorNegocio("Indique las fechas: una lista de 1 a 62 fechas AAAA-MM-DD.")
+    r = ctx.flujo.programar_salidas(p.usuario, _cuerpo_str(p, "ruta"), fechas)
+    return Respuesta(201 if r["creadas"] else 200, r)
+
+
+@endpoint("POST", "/api/salidas/ciclo", roles=LECTURA_GLOBAL)
+def salidas_ciclo(ctx: Contexto, p: Peticion):
+    """Prepara las salidas que ya entraron en su ventana de 3 dias habiles (idempotente). El campo hoy solo sirve para ensayo (queda auditado)."""
+    return Respuesta(datos=ctx.flujo.ciclo_diario(p.usuario, _cuerpo_str(p, "hoy", False) or None))
+
+
+@endpoint("GET", "/api/feriados")
+def feriados(ctx: Contexto, p: Peticion):
+    return Respuesta(datos={"feriados": ctx.estado.listar_feriados(), "semana_laboral": "lunes a sábado (domingo no es hábil)"})
+
+
+@endpoint("POST", "/api/admin/feriados", roles=LECTURA_GLOBAL)
+def feriado_agregar(ctx: Contexto, p: Peticion):
+    return Respuesta(201, ctx.estado.agregar_feriado(p.usuario, _cuerpo_str(p, "fecha"), _cuerpo_str(p, "nombre")))
+
+
+@endpoint("DELETE", "/api/admin/feriados/{fecha}", roles=LECTURA_GLOBAL)
+def feriado_quitar(ctx: Contexto, p: Peticion):
+    ctx.estado.quitar_feriado(p.usuario, p.params["fecha"])
+    return Respuesta(datos={"ok": True})
+
+
+@endpoint("GET", "/api/comparar-salidas")
+def salidas_comparar(ctx: Contexto, p: Peticion):
+    try:
+        a, b = int(p.q("a")), int(p.q("b"))
+    except ValueError as e:
+        raise ErrorNegocio("Indique las salidas a comparar (a = anterior, b = posterior).") from e
+    vis = _visibles(ctx, p.usuario)
+    for i in (a, b):
+        s = ctx.estado.obtener_salida(i)
+        if not s or s["route_id"] not in vis:
+            raise ErrorNegocio("Salida no encontrada.", 404)
+    return Respuesta(datos=ctx.estado.comparar_salidas(a, b))
+
+
+@endpoint("GET", "/api/avisos")
+def avisos(ctx: Contexto, p: Peticion):
+    vis = _visibles(ctx, p.usuario)
+    rid = p.q("ruta")
+    if rid and rid not in vis:
+        raise ErrorNegocio("Ruta no encontrada.", 404)
+    sid = p.q("salida")
+    filas = ctx.estado.listar_alertas([rid] if rid else list(vis), p.q("estado") or None, p.q("tipo") or None, int(sid) if sid.isdigit() else None)
+    return Respuesta(datos={"avisos": filas, "nota": "Avisos generados por el sistema: informan, no deciden. Los candidatos a solo contado siempre requieren decisión de gerencia."})
+
+
+@endpoint("POST", "/api/avisos/{aid}/atender", roles=LECTURA_GLOBAL)
+def aviso_atender(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.estado.atender_alerta(p.usuario, int(p.params["aid"]), _cuerpo_str(p, "estado"), _cuerpo_str(p, "nota", False)))
+
+
+@endpoint("GET", "/api/notificaciones")
+def notificaciones(ctx: Contexto, p: Peticion):
+    dest = None if p.usuario["rol"] in LECTURA_GLOBAL else p.usuario["usuario"]
+    return Respuesta(datos={"notificaciones": ctx.estado.listar_notificaciones(dest, p.q("estado") or None),
+                            "nota": "Todas las notificaciones son SIMULADAS: no se envía ningún mensaje fuera del sistema."})
+
+
+@endpoint("POST", "/api/salidas/{sid}/excel", roles=LECTURA_GLOBAL)
+def salida_excel(ctx: Contexto, p: Peticion):
+    _salida_visible(ctx, p)
+    e = ctx.flujo.generar_excel_salida(p.usuario, int(p.params["sid"]), _cuerpo_str(p, "base"))
+    return Respuesta(201 if e["creada"] else 200, e)
+
+
+@endpoint("GET", "/api/rutas/{rid}/excel")
+def excel_versiones(ctx: Contexto, p: Peticion):
+    r = _ruta_visible(ctx, p.usuario, p.params["rid"])
+    return Respuesta(datos={"versiones": ctx.estado.listar_excel(r.route_id), "estructura": "Actual/ (vigente) e Historico/ (inmutable)",
+                            "integridad": ctx.estado.verificar_excel()})
+
+
+@endpoint("GET", "/api/excel/{eid}/descargar")
+def excel_descargar(ctx: Contexto, p: Peticion):
+    import hashlib
+    e = next((x for r in _visibles(ctx, p.usuario) for x in ctx.estado.listar_excel(r) if str(x["id"]) == p.params["eid"]), None)
+    if not e:
+        raise ErrorNegocio("Archivo no encontrado.", 404)
+    f = ctx.estado.carpeta_excel / e["archivo"]
+    if not f.is_file():
+        raise ErrorNegocio("Archivo no disponible.", 404)
+    datos = f.read_bytes()
+    if hashlib.sha256(datos).hexdigest() != e["sha256"]:
+        raise ErrorNegocio("El archivo no coincide con su hash registrado (integridad).", 500)
+    ctx.estado_auditar(p, "excel.descargar", p.params["eid"])
+    return Respuesta(cuerpo=datos, tipo="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     cabeceras={"Content-Disposition": f'attachment; filename="{Path(e["archivo"]).name}"'})
+
+
+@endpoint("GET", "/api/dashboard", roles=LECTURA_GLOBAL)
+def dashboard(ctx: Contexto, p: Peticion):
+    from . import dashboard as dash
+    rutas = ctx.servicio.rutas()
+    rid = p.q("ruta")
+    if rid:
+        if rid not in rutas:
+            raise ErrorNegocio("Ruta no encontrada.", 404)
+        rutas = {rid: rutas[rid]}
+    return Respuesta(datos=dash.construir(ctx.servicio, ctx.estado, rutas, ctx.servicio.reporting, global_view=not rid))
+
+
+@endpoint("GET", "/api/dashboard/mio")
+def dashboard_mio(ctx: Contexto, p: Peticion):
+    from . import dashboard as dash
+    return Respuesta(datos=dash.construir(ctx.servicio, ctx.estado, _visibles(ctx, p.usuario), None, global_view=False))
 
 
 def make_handler(ctx: Contexto, web_dir: Optional[Path]):

@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from . import security as sec
 from .estado_docs import DDL_DOCS, DocumentosMixin
+from .estado_flujo import DDL_FLUJO, FlujoMixin
 from .estado_ops import OperacionesMixin, migrar
 
 SCHEMA_VERSION = 1
@@ -90,7 +91,7 @@ def iso(d: datetime) -> str:
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Estado(OperacionesMixin, DocumentosMixin):
+class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
     """Acceso a la BD propia. Una conexion por llamada (hilos seguros); WAL; claves foraneas activas."""
 
     def __init__(self, ruta: Path, reloj=ahora):
@@ -104,6 +105,7 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 c.execute("ALTER TABLE rutas ADD COLUMN plantilla_excel TEXT")
             c.executescript(DDL_DOCS)
             migrar(c)  # salidas, hojas de visita, candidatos, folders permanentes, 2FA y columnas nuevas
+            c.executescript(DDL_FLUJO)
             self._disparadores_catalogo(c)
             c.execute("INSERT OR IGNORE INTO meta(clave, valor) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
@@ -474,7 +476,8 @@ class Estado(OperacionesMixin, DocumentosMixin):
             return dict(c.execute("SELECT * FROM decisiones WHERE id = ?", (r["id"],)).fetchone())
 
     # ------------------------------------------------------------------ visitas
-    def registrar_visita(self, actor: dict, route_id: str, fecha_salida: str, codigo: str, estado: str, motivo: str = "", observacion: str = "") -> dict:
+    def registrar_visita(self, actor: dict, route_id: str, fecha_salida: str, codigo: str, estado: str, motivo: str = "", observacion: str = "",
+                         cobro: Optional[float] = None, venta: Optional[float] = None) -> dict:
         if estado not in ESTADOS_VISITA:
             raise ErrorNegocio(f"Estado de visita inválido. Use: {', '.join(ESTADOS_VISITA)}.")
         try:
@@ -482,6 +485,11 @@ class Estado(OperacionesMixin, DocumentosMixin):
         except ValueError as e:
             raise ErrorNegocio("fecha_salida debe ser AAAA-MM-DD.") from e
         codigo = codigo.strip().upper()
+        for nombre_monto, monto in (("cobro", cobro), ("venta", venta)):   # montos DECLARADOS en campo (no son datos de SAP)
+            if monto is not None and (not isinstance(monto, (int, float)) or isinstance(monto, bool) or monto < 0 or monto > 10_000_000):
+                raise ErrorNegocio(f"El {nombre_monto} debe ser un monto numérico entre 0 y 10,000,000.")
+        if estado == "no_visitada" and (cobro or venta):
+            raise ErrorNegocio("Una visita marcada como no realizada no puede registrar cobro ni venta.")
         if estado in ("no_visitada", "visitada_sin_firma") and len((motivo or "").strip()) < 3:
             raise ErrorNegocio("Indique el motivo cuando la visita no se hizo o no tiene firma.")
         with self.tx() as c:
@@ -494,16 +502,16 @@ class Estado(OperacionesMixin, DocumentosMixin):
             v = c.execute("SELECT * FROM visitas WHERE route_id = ? AND fecha_salida = ? AND codigo_cliente = ?", (route_id, fecha_salida, codigo)).fetchone()
             if v:
                 anterior = v["estado"]
-                c.execute("UPDATE visitas SET estado=?, motivo=?, observacion=?, actualizada=?, registrada_por=? WHERE id=?",
-                          (estado, motivo.strip(), observacion.strip(), t, actor["id"], v["id"]))
+                c.execute("UPDATE visitas SET estado=?, motivo=?, observacion=?, actualizada=?, registrada_por=?, cobro=?, venta=? WHERE id=?",
+                          (estado, motivo.strip(), observacion.strip(), t, actor["id"], cobro, venta, v["id"]))
                 vid = v["id"]
             else:
                 anterior = None
-                vid = c.execute("INSERT INTO visitas(route_id, fecha_salida, codigo_cliente, estado, motivo, observacion, registrada_por, creada, actualizada) "
-                                "VALUES (?,?,?,?,?,?,?,?,?)", (route_id, fecha_salida, codigo, estado, motivo.strip(), observacion.strip(), actor["id"], t, t)).lastrowid
+                vid = c.execute("INSERT INTO visitas(route_id, fecha_salida, codigo_cliente, estado, motivo, observacion, registrada_por, creada, actualizada, cobro, venta) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", (route_id, fecha_salida, codigo, estado, motivo.strip(), observacion.strip(), actor["id"], t, t, cobro, venta)).lastrowid
             c.execute("INSERT INTO visita_eventos(visita_id, ts, usuario_id, estado_anterior, estado_nuevo, motivo, observacion) VALUES (?,?,?,?,?,?,?)",
                       (vid, t, actor["id"], anterior, estado, motivo.strip(), observacion.strip()))
-            self.auditar(c, actor, "visita.registrar", "visita", str(vid), {"ruta": route_id, "cliente": codigo, "estado": estado})
+            self.auditar(c, actor, "visita.registrar", "visita", str(vid), {"ruta": route_id, "cliente": codigo, "estado": estado, "cobro": cobro, "venta": venta})
             return dict(c.execute("SELECT * FROM visitas WHERE id = ?", (vid,)).fetchone())
 
     def listar_visitas(self, route_id: Optional[str] = None, fecha_salida: Optional[str] = None, codigo: Optional[str] = None) -> List[dict]:
@@ -615,6 +623,7 @@ class Estado(OperacionesMixin, DocumentosMixin):
             destino.unlink(missing_ok=True)
             raise ErrorNegocio(f"El respaldo no pasó la comprobación de integridad: {ok}", 500)
         self._respaldar_documentos(destino_dir / "documentos")
+        self._respaldar_documentos(destino_dir / "rutas_excel", self.carpeta_excel)
         h = hashlib.sha256(destino.read_bytes()).hexdigest()
         (destino_dir / (nombre + ".sha256")).write_text(f"{h}  {nombre}\n", encoding="utf-8")
         antiguos = sorted(destino_dir.glob("portal-*.sqlite3"))
@@ -623,10 +632,10 @@ class Estado(OperacionesMixin, DocumentosMixin):
             (destino_dir / (viejo.name + ".sha256")).unlink(missing_ok=True)
         return destino
 
-    def _respaldar_documentos(self, destino: Path) -> int:
+    def _respaldar_documentos(self, destino: Path, origen: Optional[Path] = None) -> int:
         """Copia espejo (solo agrega) de los .xlsx de documentos: la BD sola no permite descargar versiones anteriores tras una restauracion."""
         import shutil
-        origen, n = self.carpeta_documentos, 0
+        origen, n = (origen or self.carpeta_documentos), 0
         if origen.is_dir():
             for f in origen.rglob("*"):
                 rel = f.relative_to(origen)
@@ -662,13 +671,14 @@ class Estado(OperacionesMixin, DocumentosMixin):
             extra.unlink(missing_ok=True)
         destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(archivo, destino)
-        docs = archivo.parent / "documentos"   # copia espejo que deja `respaldar`: se repone sin sobrescribir lo existente
-        if docs.is_dir():
-            for f in docs.rglob("*"):
-                rel = f.relative_to(docs)
-                if f.is_file() and not (destino.parent / "documentos" / rel).exists():
-                    (destino.parent / "documentos" / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(f, destino.parent / "documentos" / rel)
+        for carpeta in ("documentos", "rutas_excel"):   # copias espejo que deja `respaldar`: se reponen sin sobrescribir lo existente
+            docs = archivo.parent / carpeta
+            if docs.is_dir():
+                for f in docs.rglob("*"):
+                    rel = f.relative_to(docs)
+                    if f.is_file() and not (destino.parent / carpeta / rel).exists():
+                        (destino.parent / carpeta / rel).parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(f, destino.parent / carpeta / rel)
         return destino
 
     def verificar_documentos(self) -> List[str]:
@@ -682,10 +692,10 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 problemas.append(f"documento {d['id']} ({d['route_id']} v{d['version']}): falta el archivo {d['almacenado']}")
             elif hashlib.sha256(f.read_bytes()).hexdigest() != d["sha256"]:
                 problemas.append(f"documento {d['id']} ({d['route_id']} v{d['version']}): el hash no coincide")
-        return problemas
+        return problemas + self.verificar_excel()
 
     TABLAS_EXPORT = ("meta", "vendedores", "usuarios", "rutas", "zonas", "clientes_ruta", "decisiones", "salidas", "salida_resumen", "hojas_visita", "visitas",
-                     "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion")
+                     "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion", "feriados", "alertas", "notificaciones", "excel_rutas")
 
     @property
     def carpeta_documentos(self) -> Path:
@@ -700,7 +710,13 @@ class Estado(OperacionesMixin, DocumentosMixin):
             f = self.carpeta_documentos / d["almacenado"]
             if f.is_file():
                 archivos[d["almacenado"]] = base64.b64encode(f.read_bytes()).decode("ascii")
-        return {"formato": "cxc-portal-export/1", "schema_version": SCHEMA_VERSION, "exportado": self._t(), "tablas": tablas, "archivos_documentos": archivos}
+        archivos_excel = {}
+        for e in tablas["excel_rutas"]:
+            f = self.carpeta_excel / e["archivo"]
+            if f.is_file():
+                archivos_excel[e["archivo"]] = base64.b64encode(f.read_bytes()).decode("ascii")
+        return {"formato": "cxc-portal-export/1", "schema_version": SCHEMA_VERSION, "exportado": self._t(), "tablas": tablas, "archivos_documentos": archivos,
+                "archivos_excel": archivos_excel}
 
     def importar_json(self, datos: dict) -> Dict[str, int]:
         """Carga un volcado en una BD VACIA (no mezcla ni sobrescribe)."""
@@ -717,6 +733,12 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 destino = (self.carpeta_documentos / rel).resolve()
                 if self.carpeta_documentos.resolve() not in destino.parents or rel not in docs or hashlib.sha256(contenido).hexdigest() != docs[rel]:
                     raise ErrorNegocio(f"Documento '{rel}' del volcado no coincide con su registro (ruta o hash).", 400)
+            excel = {e["archivo"]: e["sha256"] for e in datos["tablas"].get("excel_rutas", [])}
+            for rel, b64 in (datos.get("archivos_excel") or {}).items():
+                contenido = base64.b64decode(b64)
+                destino = (self.carpeta_excel / rel).resolve()
+                if self.carpeta_excel.resolve() not in destino.parents or rel not in excel or hashlib.sha256(contenido).hexdigest() != excel[rel]:
+                    raise ErrorNegocio(f"Excel '{rel}' del volcado no coincide con su registro (ruta o hash).", 400)
             for t in self.TABLAS_EXPORT:
                 filas = datos["tablas"].get(t, [])
                 if t == "meta":
@@ -732,4 +754,10 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 if not destino.exists():
                     destino.write_bytes(base64.b64decode(b64))
             cuenta["archivos_documentos"] = len(datos.get("archivos_documentos") or {})
+            for rel, b64 in (datos.get("archivos_excel") or {}).items():
+                destino = self.carpeta_excel / rel
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                if not destino.exists():
+                    destino.write_bytes(base64.b64decode(b64))
+            cuenta["archivos_excel"] = len(datos.get("archivos_excel") or {})
         return cuenta
