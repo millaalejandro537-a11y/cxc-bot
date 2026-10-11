@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from . import security as sec
+from .estado_docs import DDL_DOCS, DocumentosMixin
+from .estado_ops import OperacionesMixin, migrar
 
 SCHEMA_VERSION = 1
 
@@ -86,7 +88,7 @@ def iso(d: datetime) -> str:
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Estado:
+class Estado(OperacionesMixin, DocumentosMixin):
     """Acceso a la BD propia. Una conexion por llamada (hilos seguros); WAL; claves foraneas activas."""
 
     def __init__(self, ruta: Path, reloj=ahora):
@@ -98,6 +100,8 @@ class Estado:
             c.executescript(DDL)
             if "plantilla_excel" not in [r["name"] for r in c.execute("PRAGMA table_info(rutas)")]:  # migracion de BD creadas antes de esta columna
                 c.execute("ALTER TABLE rutas ADD COLUMN plantilla_excel TEXT")
+            c.executescript(DDL_DOCS)
+            migrar(c)  # salidas, hojas de visita, candidatos, folders permanentes, 2FA y columnas nuevas
             c.execute("INSERT OR IGNORE INTO meta(clave, valor) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     @contextmanager
@@ -174,14 +178,14 @@ class Estado:
             return self._usuario(c, uid)
 
     def _usuario(self, c, uid: int) -> dict:
-        r = c.execute("SELECT u.id, u.usuario, u.nombre, u.rol, u.activo, u.debe_cambiar_password, u.vendedor_id, v.nombre AS vendedor "
+        r = c.execute("SELECT u.id, u.usuario, u.nombre, u.rol, u.activo, u.debe_cambiar_password, u.vendedor_id, u.totp_activo, v.nombre AS vendedor "
                       "FROM usuarios u LEFT JOIN vendedores v ON v.id = u.vendedor_id WHERE u.id = ?", (uid,)).fetchone()
         return dict(r) if r else {}
 
     def listar_usuarios(self) -> List[dict]:
         with self.tx() as c:
             return [dict(r) for r in c.execute(
-                "SELECT u.id, u.usuario, u.nombre, u.rol, u.activo, u.debe_cambiar_password, v.nombre AS vendedor, u.ultimo_acceso "
+                "SELECT u.id, u.usuario, u.nombre, u.rol, u.activo, u.debe_cambiar_password, u.totp_activo, v.nombre AS vendedor, u.ultimo_acceso "
                 "FROM usuarios u LEFT JOIN vendedores v ON v.id = u.vendedor_id ORDER BY u.usuario")]
 
     def actualizar_usuario(self, actor: dict, uid: int, activo: Optional[bool] = None, rol: Optional[str] = None, password: Optional[str] = None) -> dict:
@@ -285,7 +289,8 @@ class Estado:
     # ------------------------------------------------------------------ catalogo: rutas, zonas, clientes
     def guardar_ruta(self, actor: Optional[dict], route_id: str, nombre: str, vendedor: str, tipo_ruta: str, plazo_dias: Optional[int] = None,
                      zonas: Optional[Dict[str, str]] = None, clientes: Optional[List[dict]] = None, estado_fisico: str = "", notas: str = "",
-                     reemplazar_clientes: bool = True, plantilla_excel: Optional[str] = None) -> dict:
+                     reemplazar_clientes: bool = True, plantilla_excel: Optional[str] = None, requiere_hojas_visita: Optional[bool] = None,
+                     implantacion: Optional[str] = None) -> dict:
         route_id = re.sub(r"[^A-Z0-9_]", "_", route_id.strip().upper())
         if not route_id or not nombre.strip():
             raise ErrorNegocio("route_id y nombre son obligatorios.")
@@ -304,12 +309,18 @@ class Estado:
             else:
                 c.execute("INSERT INTO rutas(route_id, nombre, vendedor_id, tipo_ruta, plazo_dias, estado_fisico, notas, creada, plantilla_excel) VALUES (?,?,?,?,?,?,?,?,?)",
                           (route_id, nombre.strip(), vid, tipo_ruta, plazo, estado_fisico, notas, self._t(), plantilla_excel))
+            if requiere_hojas_visita is not None:
+                c.execute("UPDATE rutas SET requiere_hojas_visita = ? WHERE route_id = ?", (int(requiere_hojas_visita), route_id))
             if zonas is not None:
                 c.execute("DELETE FROM zonas WHERE route_id = ?", (route_id,))
                 for pref, nom in zonas.items():
                     c.execute("INSERT INTO zonas(route_id, prefijo, nombre) VALUES (?,?,?)", (route_id, pref.strip().upper(), nom.strip()))
             if clientes is not None:
                 self._reemplazar_clientes(c, route_id, clientes, reemplazar_clientes)
+            if implantacion is not None:
+                c.execute("UPDATE rutas SET implantacion = ? WHERE route_id = ?", (implantacion, route_id))
+            elif not existe:  # una ruta nueva sin clientes confirmados NO nace operativa
+                c.execute("UPDATE rutas SET implantacion = ? WHERE route_id = ?", ("OPERATIVA" if clientes else "PENDIENTE_INFORMACION", route_id))
             self.auditar(c, actor, "ruta.guardar" if existe else "ruta.crear", "ruta", route_id,
                          {"nombre": nombre, "vendedor": vendedor, "plazo_dias": plazo, "clientes": len(clientes) if clientes is not None else None})
         return self.obtener_ruta(route_id)
@@ -336,6 +347,8 @@ class Estado:
         if reemplazar:
             c.execute("DELETE FROM clientes_ruta WHERE route_id = ?", (route_id,))
         c.executemany("INSERT OR REPLACE INTO clientes_ruta(route_id, codigo, folder, zona, nombre, orden) VALUES (?,?,?,?,?,?)", norm)
+        for fila in norm:
+            self._hwm_registrar(c, route_id, fila[2])
 
     def agregar_cliente(self, actor: dict, route_id: str, codigo: str, nombre: str, zona: str) -> dict:
         """Alta nueva: toma el siguiente numero de SU zona (ej. 10 LV) sin renumerar los folders existentes."""
@@ -347,11 +360,10 @@ class Estado:
                 raise ErrorNegocio("Ruta no encontrada.", 404)
             if c.execute("SELECT 1 FROM clientes_ruta WHERE route_id = ? AND codigo = ?", (route_id, codigo)).fetchone():
                 raise ErrorNegocio("El cliente ya está en la ruta.", 409)
-            nums = [int(m.group(1)) for r in c.execute("SELECT folder FROM clientes_ruta WHERE route_id = ? AND zona = ?", (route_id, zona))
-                    if (m := re.match(r"^\s*(\d+)\s", r["folder"]))]
-            folder = f"{max(nums, default=0) + 1} {zona}"
+            folder = f"{self._hwm(c, route_id, zona) + 1} {zona}"  # numeracion PERMANENTE: nunca se reutiliza un folder
             orden = (c.execute("SELECT COALESCE(MAX(orden),0) AS m FROM clientes_ruta WHERE route_id = ?", (route_id,)).fetchone()["m"]) + 1
             c.execute("INSERT INTO clientes_ruta(route_id, codigo, folder, zona, nombre, orden) VALUES (?,?,?,?,?,?)", (route_id, codigo, folder, zona, nombre.strip(), orden))
+            self._hwm_registrar(c, route_id, folder)
             self.auditar(c, actor, "cliente_ruta.agregar", "ruta", route_id, {"codigo": codigo, "folder": folder})
         return {"route_id": route_id, "codigo": codigo, "folder": folder, "zona": zona}
 
@@ -455,6 +467,9 @@ class Estado:
         if estado in ("no_visitada", "visitada_sin_firma") and len((motivo or "").strip()) < 3:
             raise ErrorNegocio("Indique el motivo cuando la visita no se hizo o no tiene firma.")
         with self.tx() as c:
+            r = c.execute("SELECT requiere_hojas_visita AS req FROM rutas WHERE route_id = ?", (route_id,)).fetchone()
+            if not r or not r["req"]:
+                raise ErrorNegocio("Esta ruta no usa hojas de visita.", 409)
             if not c.execute("SELECT 1 FROM clientes_ruta WHERE route_id = ? AND codigo = ?", (route_id, codigo)).fetchone():
                 raise ErrorNegocio("El cliente no pertenece a esa ruta.", 404)
             t = self._t()
@@ -502,3 +517,146 @@ class Estado:
                 return False
             ests = [c.execute("SELECT estado FROM visitas WHERE route_id=? AND fecha_salida=? AND codigo_cliente=?", (route_id, f, codigo.strip().upper())).fetchone() for f in fechas]
             return all(e is not None and e["estado"] == "no_visitada" for e in ests)
+
+
+    # ------------------------------------------------------------------ segundo factor (TOTP)
+    def totp_preparar(self, usuario_id: int) -> str:
+        """Genera un secreto PENDIENTE (no activo hasta confirmar con un codigo). Reemplaza uno pendiente anterior."""
+        sec_ = sec.totp_nuevo_secreto()
+        with self.tx() as c:
+            u = c.execute("SELECT totp_activo FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+            if not u:
+                raise ErrorNegocio("Usuario no encontrado.", 404)
+            if u["totp_activo"]:
+                raise ErrorNegocio("El segundo factor ya está activo. Pida a un administrador que lo restablezca.", 409)
+            c.execute("UPDATE usuarios SET totp_secret = ?, totp_ultimo_paso = 0 WHERE id = ?", (sec_, usuario_id))
+        return sec_
+
+    def totp_activar(self, actor: dict, usuario_id: int, codigo: str, instante: float) -> List[str]:
+        with self.tx() as c:
+            u = c.execute("SELECT totp_secret, totp_activo FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+            if not u or not u["totp_secret"] or u["totp_activo"]:
+                raise ErrorNegocio("No hay un alta de segundo factor pendiente.", 409)
+            paso = sec.totp_verificar(u["totp_secret"], codigo, instante)
+            if paso is None:
+                raise ErrorNegocio("Código incorrecto. Verifique la hora del dispositivo e intente de nuevo.", 400)
+            codigos = sec.codigos_recuperacion_nuevos()
+            c.execute("UPDATE usuarios SET totp_activo = 1, totp_ultimo_paso = ?, recovery_hashes = ? WHERE id = ?",
+                      (paso, json.dumps([sec.hash_recuperacion(x) for x in codigos]), usuario_id))
+            self.auditar(c, actor, "2fa.activar", "usuario", str(usuario_id))
+        return codigos
+
+    def totp_verificar_login(self, usuario_id: int, codigo: str, instante: float) -> bool:
+        """Verifica un codigo TOTP (con anti-repeticion) o un codigo de recuperacion de un solo uso."""
+        with self.tx() as c:
+            u = c.execute("SELECT totp_secret, totp_activo, totp_ultimo_paso, recovery_hashes FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+            if not u or not u["totp_activo"]:
+                return False
+            paso = sec.totp_verificar(u["totp_secret"], codigo, instante, u["totp_ultimo_paso"])
+            if paso is not None:
+                c.execute("UPDATE usuarios SET totp_ultimo_paso = ? WHERE id = ?", (paso, usuario_id))
+                return True
+            h = sec.hash_recuperacion(str(codigo or ""))
+            hashes = json.loads(u["recovery_hashes"] or "[]")
+            if h in hashes:
+                hashes.remove(h)
+                c.execute("UPDATE usuarios SET recovery_hashes = ? WHERE id = ?", (json.dumps(hashes), usuario_id))
+                self.auditar(c, {"id": usuario_id}, "2fa.recuperacion_usada", "usuario", str(usuario_id), {"restantes": len(hashes)})
+                return True
+            return False
+
+    def totp_restablecer(self, actor: dict, usuario_id: int) -> None:
+        with self.tx() as c:
+            if not c.execute("UPDATE usuarios SET totp_secret = NULL, totp_activo = 0, recovery_hashes = NULL, totp_ultimo_paso = 0 WHERE id = ?", (usuario_id,)).rowcount:
+                raise ErrorNegocio("Usuario no encontrado.", 404)
+            c.execute("DELETE FROM sesiones WHERE usuario_id = ?", (usuario_id,))
+            self.auditar(c, actor, "2fa.restablecer", "usuario", str(usuario_id))
+
+    def totp_secreto_pendiente(self, usuario_id: int) -> Optional[str]:
+        with self.tx() as c:
+            r = c.execute("SELECT totp_secret, totp_activo FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
+            return r["totp_secret"] if r and not r["totp_activo"] else None
+
+    # ------------------------------------------------------------------ respaldo / restauracion / exportacion portable
+    def respaldar(self, destino_dir: Path, conservar: int = 14) -> Path:
+        """Copia CONSISTENTE (API de respaldo de SQLite, segura con el servidor en marcha) + comprobacion de integridad + suma SHA-256."""
+        import hashlib
+        destino_dir = Path(destino_dir)
+        destino_dir.mkdir(parents=True, exist_ok=True)
+        nombre = f"portal-{self.reloj().strftime('%Y%m%d-%H%M%S')}.sqlite3"
+        destino = destino_dir / nombre
+        origen = sqlite3.connect(self.ruta)
+        copia = sqlite3.connect(destino)
+        try:
+            origen.backup(copia)
+            ok = copia.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            copia.close()
+            origen.close()
+        if ok != "ok":
+            destino.unlink(missing_ok=True)
+            raise ErrorNegocio(f"El respaldo no pasó la comprobación de integridad: {ok}", 500)
+        h = hashlib.sha256(destino.read_bytes()).hexdigest()
+        (destino_dir / (nombre + ".sha256")).write_text(f"{h}  {nombre}\n", encoding="utf-8")
+        antiguos = sorted(destino_dir.glob("portal-*.sqlite3"))
+        for viejo in antiguos[:-conservar] if conservar > 0 else []:
+            viejo.unlink(missing_ok=True)
+            (destino_dir / (viejo.name + ".sha256")).unlink(missing_ok=True)
+        return destino
+
+    @staticmethod
+    def restaurar(archivo: Path, destino: Path, forzar: bool = False) -> Path:
+        """Restaura un respaldo verificado (suma SHA-256 + integrity_check). Si ya existe una BD en el destino exige `forzar` y la conserva como .pre-restauracion."""
+        import hashlib
+        import shutil
+        archivo, destino = Path(archivo), Path(destino)
+        suma = archivo.with_name(archivo.name + ".sha256")
+        if not suma.is_file():
+            raise ErrorNegocio("Falta el archivo .sha256 del respaldo.", 400)
+        esperado = suma.read_text(encoding="utf-8").split()[0]
+        if hashlib.sha256(archivo.read_bytes()).hexdigest() != esperado:
+            raise ErrorNegocio("La suma SHA-256 no coincide: respaldo alterado o incompleto.", 400)
+        con = sqlite3.connect(archivo)
+        try:
+            if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ErrorNegocio("El respaldo no pasa la comprobación de integridad.", 400)
+        finally:
+            con.close()
+        if destino.exists():
+            if not forzar:
+                raise ErrorNegocio("Ya existe una BD en el destino: use forzar (se conserva una copia .pre-restauracion).", 409)
+            shutil.copy2(destino, destino.with_suffix(destino.suffix + ".pre-restauracion"))
+        for extra in (destino.with_suffix(destino.suffix + "-wal"), destino.with_suffix(destino.suffix + "-shm")):
+            extra.unlink(missing_ok=True)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(archivo, destino)
+        return destino
+
+    TABLAS_EXPORT = ("meta", "vendedores", "usuarios", "rutas", "zonas", "clientes_ruta", "decisiones", "salidas", "salida_resumen", "hojas_visita", "visitas",
+                     "visita_eventos", "folder_hwm", "candidatos", "auditoria")
+
+    def exportar_json(self) -> dict:
+        """Volcado LOGICO portable de todas las tablas (para migrar a PostgreSQL u otro motor). Contiene hashes de contraseña y semillas 2FA: tratarlo como secreto."""
+        with self.tx() as c:
+            return {"formato": "cxc-portal-export/1", "schema_version": SCHEMA_VERSION, "exportado": self._t(),
+                    "tablas": {t: [dict(r) for r in c.execute(f"SELECT * FROM {t}")] for t in self.TABLAS_EXPORT}}
+
+    def importar_json(self, datos: dict) -> Dict[str, int]:
+        """Carga un volcado en una BD VACIA (no mezcla ni sobrescribe)."""
+        if datos.get("formato") != "cxc-portal-export/1":
+            raise ErrorNegocio("Formato de exportación desconocido.", 400)
+        with self.tx() as c:
+            if c.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] or c.execute("SELECT COUNT(*) FROM rutas").fetchone()[0]:
+                raise ErrorNegocio("La BD destino no está vacía: la importación no mezcla datos.", 409)
+            c.execute("PRAGMA foreign_keys = OFF")
+            cuenta = {}
+            for t in self.TABLAS_EXPORT:
+                filas = datos["tablas"].get(t, [])
+                if t == "meta":
+                    c.execute("DELETE FROM meta")
+                for f in filas:
+                    cols = list(f.keys())
+                    c.execute(f"INSERT INTO {t} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [f[k] for k in cols])
+                cuenta[t] = len(filas)
+            self.auditar(c, {"usuario": "importacion", "rol": "admin"}, "bd.importar", "bd", "", cuenta)
+        return cuenta

@@ -27,6 +27,12 @@ RUTAS_SEMILLA = (
          notas="Lista física confirmada (31: SY 7, MY 7, PY 1, YT 3, YO 13); IARA'S BEAUTY SALON = C10617, sin C10924."),
 )
 
+# Ruta piloto OCCIDENTE (vendedor José Carpio): se crea VACIA. No se inventan clientes, zonas ni orden: llegan de la organización física
+# (fin de semana 10-11/10/2026) y se incorporan con confirmación humana. Necesita hojas de visita imprimibles.
+RUTA_OCCIDENTE = dict(route_id="OCCIDENTE", nombre="Occidente", vendedor="José Carpio", tipo="FORANEA",
+                      estado_fisico="PENDIENTE: organización física de la ruta (fin de semana 10–11/10/2026).",
+                      notas="PROVISIONAL: tipo de ruta/plazo (foránea 60 d / local 30 d) por confirmar; sin clientes, zonas ni orden hasta recibirlos.")
+
 
 def sembrar(estado: Estado, data_dir: Path, actor: dict) -> Dict[str, List[str]]:
     data_dir = Path(data_dir)
@@ -46,6 +52,11 @@ def sembrar(estado: Estado, data_dir: Path, actor: dict) -> Dict[str, List[str]]
                             zonas=cfg["zonas"], clientes=[{"codigo": f.codigo, "folder": f.folder, "zona": f.zona, "nombre": nombres.get(f.codigo, f.nombre)} for f in filas],
                             estado_fisico=cfg["estado_fisico"], notas=cfg["notas"], plantilla_excel=cfg.get("plantilla_excel"))
         resumen["rutas_creadas"].append(cfg["route_id"])
+    if RUTA_OCCIDENTE["route_id"] not in existentes:
+        c = RUTA_OCCIDENTE
+        estado.guardar_ruta(actor, c["route_id"], c["nombre"], c["vendedor"], c["tipo"], ps.PLAZO_FORANEA, estado_fisico=c["estado_fisico"], notas=c["notas"],
+                            requiere_hojas_visita=True, implantacion="PENDIENTE_INFORMACION")
+        resumen["rutas_creadas"].append(c["route_id"])
     archivo = data_dir / DECISIONES_ARCHIVO
     if archivo.is_file():
         vigentes = estado.decisiones_vigentes()

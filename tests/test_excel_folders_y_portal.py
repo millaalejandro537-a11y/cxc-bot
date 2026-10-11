@@ -114,3 +114,33 @@ def test_generar_excel_permisos_y_validaciones(env):
     # una ruta sin plantilla configurada en config/routes.json no se inventa
     st, _, js = adm.post("/api/rutas/DEMO/generar-excel", {"base": "base.xlsx", "fecha_salida": "2026-10-13"})
     assert st == 409 and "plantilla Excel" in js["error"]
+
+
+# ----------------------------------------------------------------------------- las 14 rutas operativas: el generador desde el portal funciona con cada plantilla
+RUTAS_Y_PLANTILLAS = [
+    ("CORTES", "CORTES septiembre.xlsx"), ("LAS_VEGAS", "LAS VEGAS MAYO.xlsx"), ("LA_LIMA", "LIMA JUNIO 6.xlsx"), ("CHOLOMA", "CHOLOMA 19-5.xlsx"),
+    ("PROGRESO", "PROGRESO 21-5.xlsx"), ("OLANCHO", "OLANCHO AGOSTO.xlsx"), ("YORO", "YOROABRIL.xlsx"), ("ROATAN", "ROATAN ABRIL.xlsx"),
+    ("LITORAL", "LITORAL MARZO.xlsx"), ("OCCIDENTE", "OCCIDENTE MAYO.xlsx"), ("SANTA_BARBARA", "sta barbara Junio.xlsx"), ("VILLANUEVA", "VILLANUEVA MAYO 2.xlsx"),
+    ("COMAYAGUA", "COMAYAGUA JUNIO.xlsx"), ("STA_CRUZ", "STA CRUZ MAYO.xlsx"),
+]
+
+
+@pytest.mark.parametrize("route_id,archivo", RUTAS_Y_PLANTILLAS)
+def test_generar_excel_de_cada_ruta_operativa_con_dos_hojas_y_folders_por_zona(tmp_path, route_id, archivo):
+    ctx = crear_entorno(tmp_path)
+    ctx.estado.guardar_ruta(ACTOR, route_id, route_id.replace("_", " ").title(), "Vendedor Demo", "FORANEA", None, zonas={"ZA": "Zona A", "ZB": "Zona B"},
+                            clientes=[{"codigo": "C90001", "folder": "1 ZA", "nombre": "SALON DEMO EXCELENTE (A)"}, {"codigo": "C90002", "folder": "2 ZA", "nombre": "SALON DEMO BUENO (B)"},
+                                      {"codigo": "C90003", "folder": "1 ZB", "nombre": "SALON DEMO REGULAR (C)"}])
+    rutas = tmp_path / "datos" / "01_Rutas"
+    rutas.mkdir(parents=True)
+    shutil.copy2(Path("tests/fixtures/rutas_reales") / archivo, rutas / "base.xlsx")
+    datos, nombre, avisos = ctx.servicio.generar_excel(ACTOR, route_id, "base.xlsx", "2026-10-13")
+    out = tmp_path / "o.xlsx"
+    out.write_bytes(datos)
+    from cxc_bot.config import RouteNotFoundError
+    cfg = ctx.servicio._config_excel(ctx.estado.obtener_ruta(route_id))
+    wb = openpyxl.load_workbook(out)
+    assert wb.sheetnames == [cfg.main_sheet, cfg.data_sheet]                       # exactamente dos hojas
+    ws = wb[cfg.main_sheet]
+    assert [ws[f"{cfg.num_col}{cfg.data_start_row + i}"].value for i in range(3)] == ["1 ZA", "2 ZA", "1 ZB"]
+    assert [ws[f"{cfg.code_col}{cfg.data_start_row + i}"].value for i in range(3)] == ["C90001", "C90002", "C90003"]

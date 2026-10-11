@@ -14,8 +14,10 @@ import hmac
 import io
 import json
 import re
+import secrets as _secrets
 import sys
 import tempfile
+import time
 from datetime import date
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
@@ -52,19 +54,28 @@ REGLAS = {
 
 class Contexto:
     def __init__(self, servicio: PortalServicio, estado: Estado, https: bool = False, hosts_permitidos: Optional[List[str]] = None,
-                 confiar_proxy: bool = False, limitador: Optional[sec.LimitadorIntentos] = None):
+                 confiar_proxy: bool = False, limitador: Optional[sec.LimitadorIntentos] = None, roles_2fa: Tuple[str, ...] = (),
+                 perimetro_token: Optional[str] = None, reloj_totp: Callable[[], float] = time.time):
         self.servicio, self.estado, self.https = servicio, estado, https
+        self.roles_2fa = tuple(roles_2fa)                  # roles que DEBEN tener segundo factor activo
+        self.perimetro_token = perimetro_token or None     # si se define, toda peticion debe traer X-Perimeter-Token (acceso solo via el perimetro)
+        self.reloj_totp = reloj_totp
+        self.retos: Dict[str, dict] = {}                   # login en dos pasos: reto -> {usuario_id, expira, intentos}
         self.hosts = {h.lower() for h in (hosts_permitidos or [])} | set(LOOPBACK)
         self.confiar_proxy = confiar_proxy
         self.limitador = limitador or sec.LimitadorIntentos()
 
 
 class Peticion:
-    def __init__(self, metodo: str, ruta: str, qs: dict, cuerpo: dict, usuario: Optional[dict], csrf: Optional[str], ip: str, params: dict):
+    def __init__(self, metodo: str, ruta: str, qs: dict, cuerpo: dict, usuario: Optional[dict], csrf: Optional[str], ip: str, params: dict, cabeceras: Optional[dict] = None):
         self.metodo, self.ruta, self.qs, self.cuerpo, self.usuario, self.csrf, self.ip, self.params = metodo, ruta, qs, cuerpo, usuario, csrf, ip, params
+        self.cabeceras = cabeceras or {}
 
     def q(self, k: str, d: str = "") -> str:
         return (self.qs.get(k, [d])[0] or d).strip()
+
+    def cabecera(self, nombre: str) -> str:
+        return (self.cabeceras.get(nombre.lower()) or "").strip()
 
 
 class Respuesta:
@@ -121,7 +132,12 @@ def _cuerpo_str(p: Peticion, k: str, obligatorio: bool = True) -> str:
 # ----------------------------------------------------------------------------- publico / auth
 @endpoint("GET", "/api/health", roles=None, publico=True)
 def health(ctx: Contexto, p: Peticion):
-    return Respuesta(datos={"status": "ok"})
+    try:
+        with ctx.estado.tx() as c:
+            c.execute("SELECT 1").fetchone()
+    except Exception:  # noqa: BLE001 - sirve a monitores/reinicio automatico: 503 si la BD no responde
+        return Respuesta(503, {"status": "error", "db": "error"})
+    return Respuesta(datos={"status": "ok", "db": "ok"})
 
 
 @endpoint("POST", "/api/auth/login", roles=None, publico=True)
@@ -137,9 +153,60 @@ def login(ctx: Contexto, p: Peticion):
         ctx.limitador.fallo(f"ip|{p.ip}")
         return Respuesta(401, {"error": "Usuario o contraseña incorrectos."})
     ctx.limitador.exito(clave_lim)
+    if u["totp_activo"]:  # contraseña correcta pero falta el segundo factor: aun NO hay sesion
+        ahora = time.time()
+        for k in [k for k, v in ctx.retos.items() if v["expira"] < ahora]:
+            ctx.retos.pop(k, None)
+        reto = sec.nuevo_token()
+        ctx.retos[sec.hash_token(reto)] = {"usuario": u, "expira": ahora + 300, "intentos": 0, "ip": p.ip}
+        return Respuesta(datos={"requiere_2fa": True, "reto": reto})
+    return _abrir_sesion(ctx, u, p)
+
+
+def _abrir_sesion(ctx: Contexto, u: dict, p: Peticion):
     ses = ctx.estado.crear_sesion(u["id"], p.ip)
     ck = f"{COOKIE}={ses['token']}; HttpOnly; SameSite=Strict; Path=/; Max-Age={sec.SESION_MAX_SEG}" + ("; Secure" if ctx.https else "")
-    return Respuesta(datos={"usuario": u, "csrf": ses["csrf"], "debe_cambiar_password": bool(u["debe_cambiar_password"])}, cookies=[ck])
+    return Respuesta(datos={"usuario": u, "csrf": ses["csrf"], "debe_cambiar_password": bool(u["debe_cambiar_password"]),
+                            "debe_configurar_2fa": u["rol"] in ctx.roles_2fa and not u["totp_activo"]}, cookies=[ck])
+
+
+@endpoint("POST", "/api/auth/login/2fa", roles=None, publico=True)
+def login_2fa(ctx: Contexto, p: Peticion):
+    h = sec.hash_token(_cuerpo_str(p, "reto"))
+    reto = ctx.retos.get(h)
+    if not reto or reto["expira"] < time.time():
+        ctx.retos.pop(h, None)
+        return Respuesta(401, {"error": "El paso de verificación expiró. Vuelva a iniciar sesión."})
+    reto["intentos"] += 1
+    if reto["intentos"] > 5:
+        ctx.retos.pop(h, None)
+        return Respuesta(429, {"error": "Demasiados intentos de código. Vuelva a iniciar sesión."})
+    u = reto["usuario"]
+    if not ctx.estado.totp_verificar_login(u["id"], str(p.cuerpo.get("codigo") or ""), ctx.reloj_totp()):
+        with ctx.estado.tx() as c:
+            ctx.estado.auditar(c, u, "login.fallido", "usuario", str(u["id"]), {"motivo": "2fa"}, p.ip)
+        return Respuesta(401, {"error": "Código incorrecto."})
+    ctx.retos.pop(h, None)
+    return _abrir_sesion(ctx, u, p)
+
+
+@endpoint("POST", "/api/auth/2fa/iniciar", roles=TODOS)
+def tfa_iniciar(ctx: Contexto, p: Peticion):
+    secreto = ctx.estado.totp_preparar(p.usuario["id"])
+    return Respuesta(datos={"secreto": secreto, "uri": sec.totp_uri(secreto, p.usuario["usuario"]),
+                            "instrucciones": "Agregue la cuenta en su app de autenticación (Google/Microsoft Authenticator, Authy, 1Password) con la clave o el enlace y confirme con el código de 6 dígitos."})
+
+
+@endpoint("POST", "/api/auth/2fa/activar", roles=TODOS)
+def tfa_activar(ctx: Contexto, p: Peticion):
+    codigos = ctx.estado.totp_activar(p.usuario, p.usuario["id"], str(p.cuerpo.get("codigo") or ""), ctx.reloj_totp())
+    return Respuesta(datos={"activo": True, "codigos_recuperacion": codigos, "aviso": "Guárdelos ahora: cada código sirve una sola vez y no se volverán a mostrar."})
+
+
+@endpoint("POST", "/api/admin/usuarios/{uid}/2fa/restablecer", roles=(ADM,))
+def tfa_restablecer(ctx: Contexto, p: Peticion):
+    ctx.estado.totp_restablecer(p.usuario, int(p.params["uid"]))
+    return Respuesta(datos={"ok": True})
 
 
 @endpoint("POST", "/api/auth/logout", roles=TODOS)
@@ -150,7 +217,7 @@ def logout(ctx: Contexto, p: Peticion):
 
 @endpoint("GET", "/api/auth/me", roles=TODOS)
 def me(ctx: Contexto, p: Peticion):
-    return Respuesta(datos={"usuario": p.usuario, "csrf": p.csrf})
+    return Respuesta(datos={"usuario": p.usuario, "csrf": p.csrf, "debe_configurar_2fa": p.usuario["rol"] in ctx.roles_2fa and not p.usuario["totp_activo"]})
 
 
 @endpoint("POST", "/api/auth/password", roles=TODOS)
@@ -319,6 +386,215 @@ def visita_eventos(ctx: Contexto, p: Peticion):
     return Respuesta(datos={"visita": v, "eventos": ctx.estado.eventos_visita(v["id"])})
 
 
+# ----------------------------------------------------------------------------- salidas, hojas de visita y seguimiento
+def _salida_visible(ctx: Contexto, p: Peticion) -> dict:
+    sal = ctx.estado.obtener_salida(int(p.params["sid"])) if p.params["sid"].isdigit() else {}
+    if not sal or sal["route_id"] not in _visibles(ctx, p.usuario):
+        raise ErrorNegocio("Salida no encontrada.", 404)
+    return sal
+
+
+@endpoint("GET", "/api/salidas")
+def salidas(ctx: Contexto, p: Peticion):
+    vis = _visibles(ctx, p.usuario)
+    rid = p.q("ruta")
+    if rid and rid not in vis:
+        raise ErrorNegocio("Ruta no encontrada.", 404)
+    return Respuesta(datos={"salidas": [s for s in ctx.estado.listar_salidas(rid or None) if s["route_id"] in vis]})
+
+
+@endpoint("POST", "/api/salidas", roles=LECTURA_GLOBAL)
+def salida_crear(ctx: Contexto, p: Peticion):
+    return Respuesta(201, ctx.estado.crear_salida(p.usuario, _cuerpo_str(p, "ruta"), _cuerpo_str(p, "fecha_salida"), _cuerpo_str(p, "fecha_regreso", False) or None,
+                                                  _cuerpo_str(p, "notas", False)))
+
+
+@endpoint("GET", "/api/salidas/{sid}")
+def salida_detalle(ctx: Contexto, p: Peticion):
+    sal = _salida_visible(ctx, p)
+    return Respuesta(datos={"salida": sal, "seguimiento": ctx.estado.seguimiento_salida(sal["id"])})
+
+
+@endpoint("POST", "/api/salidas/{sid}/preparar", roles=LECTURA_GLOBAL)
+def salida_preparar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.servicio.preparar_salida(p.usuario, int(p.params["sid"])))
+
+
+@endpoint("POST", "/api/salidas/{sid}/revisar", roles=LECTURA_GLOBAL)
+def salida_revisar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.estado.revisar_salida(p.usuario, int(p.params["sid"]), _cuerpo_str(p, "nota")))
+
+
+@endpoint("POST", "/api/salidas/{sid}/estado", roles=LECTURA_GLOBAL)
+def salida_estado(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.estado.cambiar_estado_salida(p.usuario, int(p.params["sid"]), _cuerpo_str(p, "estado")))
+
+
+@endpoint("GET", "/api/salidas/{sid}/hoja-visita")
+def salida_hoja(ctx: Contexto, p: Peticion):
+    """Hoja de visita de la salida = documento reutilizable vinculado (no se regenera). El vendedor solo la de sus rutas."""
+    sal = _salida_visible(ctx, p)
+    return Respuesta(datos=ctx.estado.hoja_de_salida(sal["id"]))
+
+
+@endpoint("GET", "/api/rutas/{rid}/omisiones")
+def ruta_omisiones(ctx: Contexto, p: Peticion):
+    r = _ruta_visible(ctx, p.usuario, p.params["rid"])
+    return Respuesta(datos=ctx.estado.omisiones_consecutivas(r.route_id, max(2, min(6, int(p.q("n", "3") or 3)))))
+
+
+# ----------------------------------------------------------------------------- incorporacion de clientes a una ruta (confirmacion humana)
+@endpoint("POST", "/api/admin/rutas/{rid}/candidatos/buscar", roles=LECTURA_GLOBAL)
+def cand_buscar(ctx: Contexto, p: Peticion):
+    palabras = p.cuerpo.get("palabras")
+    if not isinstance(palabras, list):
+        raise ErrorNegocio("'palabras' debe ser una lista.")
+    return Respuesta(datos={"sugerencias": ctx.servicio.buscar_candidatos([str(x) for x in palabras], p.params["rid"])})
+
+
+@endpoint("GET", "/api/admin/rutas/{rid}/candidatos", roles=LECTURA_GLOBAL)
+def cand_listar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos={"candidatos": ctx.estado.listar_candidatos(p.params["rid"], p.q("estado") or None), "folders_usados": ctx.estado.folders_usados(p.params["rid"])})
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/candidatos", roles=LECTURA_GLOBAL)
+def cand_proponer(ctx: Contexto, p: Peticion):
+    items = p.cuerpo.get("clientes")
+    if not isinstance(items, list) or not items:
+        raise ErrorNegocio("'clientes' debe ser una lista no vacía de {codigo, nombre, zona}.")
+    return Respuesta(201, {"propuestos": ctx.estado.proponer_candidatos(p.usuario, p.params["rid"], items, _cuerpo_str(p, "origen", False) or "manual")})
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/candidatos/{cid}/confirmar", roles=LECTURA_GLOBAL)
+def cand_confirmar(ctx: Contexto, p: Peticion):
+    r = ctx.estado.confirmar_candidato(p.usuario, p.params["rid"], int(p.params["cid"]), _cuerpo_str(p, "zona"), _cuerpo_str(p, "folder", False) or None)
+    ctx.servicio.invalidar()
+    return Respuesta(201, r)
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/candidatos/{cid}/rechazar", roles=LECTURA_GLOBAL)
+def cand_rechazar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.estado.rechazar_candidato(p.usuario, p.params["rid"], int(p.params["cid"]), _cuerpo_str(p, "motivo")))
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/zonas", roles=LECTURA_GLOBAL)
+def zona_agregar(ctx: Contexto, p: Peticion):
+    r = ctx.estado.agregar_zona(p.usuario, p.params["rid"], _cuerpo_str(p, "prefijo"), _cuerpo_str(p, "nombre"))
+    ctx.servicio.invalidar()
+    return Respuesta(201, r)
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/implantacion", roles=(ADM,))
+def ruta_implantacion(ctx: Contexto, p: Peticion):
+    r = ctx.estado.fijar_implantacion(p.usuario, p.params["rid"], _cuerpo_str(p, "estado"))
+    ctx.servicio.invalidar()
+    return Respuesta(datos=r)
+
+
+# ----------------------------------------------------------------------------- documentos reutilizables (hojas de visita) y cola de impresion
+def _doc_visible(ctx: Contexto, p: Peticion, did: str) -> dict:
+    d = ctx.estado.obtener_documento(int(did)) if did.isdigit() else {}
+    if not d or d["route_id"] not in _visibles(ctx, p.usuario):
+        raise ErrorNegocio("Documento no encontrado.", 404)
+    return d
+
+
+@endpoint("GET", "/api/rutas/{rid}/documentos")
+def ruta_documentos(ctx: Contexto, p: Peticion):
+    r = _ruta_visible(ctx, p.usuario, p.params["rid"])
+    return Respuesta(datos={"documentos": ctx.estado.listar_documentos(r.route_id), "usa_hojas_de_visita": r.requiere_hojas_visita})
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/documentos", roles=(ADM,))
+def doc_importar(ctx: Contexto, p: Peticion):
+    """Registra la v1 (o una NUEVA VERSION con confirmar=true y motivo). Nunca sobrescribe."""
+    d = ctx.servicio.importar_documento(p.usuario, p.params["rid"], _cuerpo_str(p, "archivo"), _cuerpo_str(p, "motivo", False),
+                                        bool(p.cuerpo.get("nueva_version")), bool(p.cuerpo.get("confirmar")))
+    return Respuesta(201, d)
+
+
+@endpoint("GET", "/api/documentos/{did}")
+def doc_detalle(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=_doc_visible(ctx, p, p.params["did"]))
+
+
+@endpoint("GET", "/api/documentos/{did}/descargar")
+def doc_descargar(ctx: Contexto, p: Peticion):
+    _doc_visible(ctx, p, p.params["did"])
+    d, datos = ctx.servicio.bytes_documento(int(p.params["did"]))
+    with ctx.estado.tx() as c:
+        ctx.estado.auditar(c, p.usuario, "documento.descargar", "documento", str(d["id"]), {"version": d["version"]}, p.ip)
+    return Respuesta(cuerpo=datos, tipo="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     cabeceras={"Content-Disposition": f'attachment; filename="{d["route_id"]}_hojas_de_visita_v{d["version"]}.xlsx"'})
+
+
+@endpoint("POST", "/api/admin/rutas/{rid}/documentos/{did}/proponer-clientes", roles=LECTURA_GLOBAL)
+def doc_proponer(ctx: Contexto, p: Peticion):
+    return Respuesta(201, {"propuestos": ctx.servicio.proponer_desde_documento(p.usuario, p.params["rid"], int(p.params["did"]))})
+
+
+@endpoint("GET", "/api/salidas/{sid}/documentos")
+def salida_documentos(ctx: Contexto, p: Peticion):
+    sal = _salida_visible(ctx, p)
+    return Respuesta(datos={"documentos": ctx.estado.documentos_de_salida(sal["id"])})
+
+
+@endpoint("GET", "/api/impresion")
+def impresion_listar(ctx: Contexto, p: Peticion):
+    ids = None if p.usuario["rol"] in LECTURA_GLOBAL else list(_visibles(ctx, p.usuario))
+    return Respuesta(datos={"solicitudes": ctx.estado.listar_impresiones(ids, p.q("estado") or None),
+                            "nota": "Solo registro de solicitudes: todavía no hay agente de impresión conectado; nada se imprime automáticamente."})
+
+
+@endpoint("POST", "/api/impresion")
+def impresion_solicitar(ctx: Contexto, p: Peticion):
+    rid = _cuerpo_str(p, "ruta", False) or None
+    if rid:
+        _ruta_visible(ctx, p.usuario, rid)
+    elif p.usuario["rol"] == VEN:
+        raise ErrorNegocio("Indique la ruta.")
+    return Respuesta(201, ctx.estado.solicitar_impresion(p.usuario, _cuerpo_str(p, "tipo"), rid, int(p.cuerpo["salida_id"]) if p.cuerpo.get("salida_id") else None,
+                                                         int(p.cuerpo["documento_id"]) if p.cuerpo.get("documento_id") else None, _cuerpo_str(p, "referencia", False) or None,
+                                                         int(p.cuerpo.get("copias") or 1), _cuerpo_str(p, "destino", False) or None))
+
+
+@endpoint("POST", "/api/impresion/{iid}/cancelar", roles=LECTURA_GLOBAL)
+def impresion_cancelar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.estado.cancelar_impresion(p.usuario, int(p.params["iid"])))
+
+
+@endpoint("POST", "/api/admin/agentes-impresion", roles=(ADM,))
+def agente_registrar(ctx: Contexto, p: Peticion):
+    token = sec.nuevo_token()
+    a = ctx.estado.registrar_agente(p.usuario, _cuerpo_str(p, "nombre"), sec.hash_token(token))
+    return Respuesta(201, {**a, "token": token, "aviso": "Guarde este token ahora: no se vuelve a mostrar. El agente lo envía en X-Agent-Token."})
+
+
+def _agente(ctx: Contexto, p: Peticion) -> dict:
+    """Los endpoints del agente NO usan sesion de usuario: autentican con su token propio (solo se guarda el hash). Mismo limite de intentos por IP."""
+    if ctx.limitador.bloqueado(f"agente|{p.ip}"):
+        raise ErrorNegocio("Demasiados intentos.", 429)
+    token = p.cabecera("X-Agent-Token")
+    ag = ctx.estado.agente_por_token(sec.hash_token(token)) if token else None
+    if not ag:
+        ctx.limitador.fallo(f"agente|{p.ip}")
+        raise ErrorNegocio("Agente no autorizado.", 401)
+    return ag
+
+
+@endpoint("POST", "/api/agente/siguiente", roles=None, publico=True)
+def agente_siguiente(ctx: Contexto, p: Peticion):
+    ag = _agente(ctx, p)
+    t = ctx.estado.agente_tomar_pendiente(ag["id"])
+    return Respuesta(datos={"trabajo": t} if t else {"trabajo": None})
+
+
+@endpoint("POST", "/api/agente/{iid}/resultado", roles=None, publico=True)
+def agente_resultado(ctx: Contexto, p: Peticion):
+    ag = _agente(ctx, p)
+    return Respuesta(datos=ctx.estado.agente_reportar(ag["id"], int(p.params["iid"]), bool(p.cuerpo.get("ok")), str(p.cuerpo.get("detalle") or "")))
+
+
 # ----------------------------------------------------------------------------- Excel de ruta (generador de CXC BOT)
 @endpoint("GET", "/api/excel/bases", roles=LECTURA_GLOBAL)
 def excel_bases(ctx: Contexto, p: Peticion):
@@ -427,7 +703,8 @@ def adm_ruta_guardar(ctx: Contexto, p: Peticion):
         raise ErrorNegocio("'clientes' debe ser una lista.")
     r = ctx.estado.guardar_ruta(p.usuario, _cuerpo_str(p, "route_id"), _cuerpo_str(p, "nombre"), _cuerpo_str(p, "vendedor"), _cuerpo_str(p, "tipo_ruta"),
                                 int(p.cuerpo["plazo_dias"]) if p.cuerpo.get("plazo_dias") else None, zonas, clientes,
-                                _cuerpo_str(p, "estado_fisico", False), _cuerpo_str(p, "notas", False))
+                                _cuerpo_str(p, "estado_fisico", False), _cuerpo_str(p, "notas", False),
+                                requiere_hojas_visita=p.cuerpo.get("requiere_hojas_visita") if isinstance(p.cuerpo.get("requiere_hojas_visita"), bool) else None)
     ctx.servicio.invalidar()
     return Respuesta(201, r)
 
@@ -554,6 +831,10 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
         def _manejar(self):
             if not self._host_ok():
                 return self._enviar(Respuesta(403, {"error": "Host no permitido."}))
+            if ctx.perimetro_token and urlparse(self.path).path != "/api/health":
+                dado = self.headers.get("X-Perimeter-Token") or ""
+                if not hmac.compare_digest(dado.encode(), ctx.perimetro_token.encode()):
+                    return self._enviar(Respuesta(403, {"error": "Acceso directo no permitido: use la dirección oficial del portal."}))
             u = urlparse(self.path)
             ruta = unquote(u.path)
             if not ruta.startswith("/api/"):
@@ -576,6 +857,9 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
                     usuario = ses["usuario"]
                     if usuario["debe_cambiar_password"] and ruta not in ("/api/auth/password", "/api/auth/me", "/api/auth/logout"):
                         return self._enviar(Respuesta(403, {"error": "Debe cambiar su contraseña antes de continuar.", "debe_cambiar_password": True}))
+                    if (usuario["rol"] in ctx.roles_2fa and not usuario["totp_activo"]
+                            and not ruta.startswith("/api/auth/2fa/") and ruta not in ("/api/auth/me", "/api/auth/logout", "/api/auth/password")):
+                        return self._enviar(Respuesta(403, {"error": "Debe activar el segundo factor de autenticación antes de continuar.", "debe_configurar_2fa": True}))
                     if roles is not None and usuario["rol"] not in roles:
                         with ctx.estado.tx() as c:
                             ctx.estado.auditar(c, usuario, "acceso.denegado", "api", ruta, {"metodo": metodo}, self._ip())
@@ -585,7 +869,8 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
                 cuerpo = self._cuerpo() if metodo in ("POST", "PATCH", "PUT", "DELETE") else {}
                 if fn is logout:
                     cuerpo["_token"] = token
-                p = Peticion(metodo, ruta, parse_qs(u.query), cuerpo, ses["usuario"] if ses else None, ses["csrf"] if ses else None, self._ip(), m.groupdict())
+                p = Peticion(metodo, ruta, parse_qs(u.query), cuerpo, ses["usuario"] if ses else None, ses["csrf"] if ses else None, self._ip(), m.groupdict(),
+                             {k.lower(): v for k, v in self.headers.items()})
                 self._enviar(fn(ctx, p))
             except ErrorNegocio as e:
                 self._enviar(Respuesta(e.codigo, {"error": e.mensaje}))

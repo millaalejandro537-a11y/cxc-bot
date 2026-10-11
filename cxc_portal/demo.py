@@ -90,4 +90,4 @@ def sembrar_demo(estado, actor):
         return
     estado.guardar_ruta(actor, "DEMO", "Ruta DEMO (sintética)", "Vendedor Demo", "FORANEA", PLAZO, zonas={"DM": "Zona Demo"},
                         clientes=[{"codigo": c, "folder": f"{i} DM", "zona": "DM", "nombre": n} for i, (c, n, *_) in enumerate(SPEC, 1)],
-                        estado_fisico="n/a (sintética)", notas="Datos ficticios para demostración y pruebas.")
+                        estado_fisico="n/a (sintética)", notas="Datos ficticios para demostración y pruebas.", requiere_hojas_visita=True)

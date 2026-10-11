@@ -46,6 +46,8 @@ class Ruta:
     estado_fisico: str = ""
     notas: str = ""
     avisos: List[str] = field(default_factory=list)
+    requiere_hojas_visita: bool = False
+    implantacion: str = "OPERATIVA"
 
     def resumen(self) -> dict:
         calc: Dict[str, int] = {}
@@ -61,6 +63,7 @@ class Ruta:
             "alertas_cobro": sum(len(c.resultado.alertas_cobro) for c in self.clientes),
             "alertas_historicas": sum(len(c.resultado.alertas_historicas) for c in self.clientes),
             "estado_fisico": self.estado_fisico, "notas": self.notas, "avisos": self.avisos,
+            "requiere_hojas_visita": self.requiere_hojas_visita, "implantacion": self.implantacion,
         }
 
     def cliente_dict(self, c: ClienteRuta) -> dict:
@@ -127,7 +130,7 @@ class PortalServicio:
                 nombre = (self.fuente.nombre_cliente(c["codigo"]) if usable else None) or c["nombre"]
                 clientes.append(ClienteRuta(c["folder"], c["zona"], c["codigo"], nombre, saldo, res))
             out[r["route_id"]] = Ruta(r["route_id"], r["nombre"], r["vendedor"], r["tipo_ruta"], r["plazo_dias"], fuente_meta, r["zonas"], clientes,
-                                      r["estado_fisico"], r["notas"])
+                                      r["estado_fisico"], r["notas"], requiere_hojas_visita=bool(r["requiere_hojas_visita"]), implantacion=r["implantacion"])
         return out
 
     def rutas(self) -> Dict[str, Ruta]:
@@ -200,7 +203,7 @@ class PortalServicio:
     # ------------------------------------------------------------------ Excel de ruta (generador de CXC BOT)
     def _config_excel(self, r: dict):
         from cxc_bot.config import RouteNotFoundError, load_route_config
-        for nombre in filter(None, (r.get("plantilla_excel"), r["route_id"].replace("_", " "), r["nombre"].upper(), r["nombre"])):
+        for nombre in filter(None, (r.get("plantilla_excel"), r["route_id"], r["route_id"].replace("_", " "), r["nombre"].upper(), r["nombre"])):
             try:
                 return load_route_config(nombre)
             except RouteNotFoundError:
@@ -273,3 +276,117 @@ class PortalServicio:
         with self.estado.tx() as c:
             self.estado.auditar(c, actor, "excel.generar", "ruta", route_id, {"base": base, "fecha_salida": fecha_salida, "archivo": nombre, "clientes": len(roster)})
         return datos, nombre, rep.warnings
+
+    # ------------------------------------------------------------------ candidatos: busqueda en el snapshot (solo SUGIERE; la ruta la confirma una persona)
+    @staticmethod
+    def _norm(t: str) -> str:
+        import unicodedata
+        t = unicodedata.normalize("NFKD", t or "")
+        return " ".join("".join(c for c in t if not unicodedata.combining(c)).upper().split())
+
+    def buscar_candidatos(self, palabras: List[str], route_id: str, limite: int = 200) -> List[dict]:
+        """Clientes de la fuente cuyo nombre contiene alguna palabra (p. ej. el nombre de una zona). NO modifica nada: devuelve sugerencias
+        con la ruta a la que ya pertenecen (si alguna) para que una persona decida."""
+        if self.fuente is None or self.fuente.en_vivo:
+            raise ErrorNegocio("No hay un snapshot utilizable para buscar clientes.", 409)
+        claves = [self._norm(p) for p in palabras if self._norm(p)]
+        if not claves:
+            raise ErrorNegocio("Indique al menos una palabra de búsqueda (p. ej. el nombre de la zona).")
+        asignado = {}
+        for r in self.estado.listar_rutas(solo_activas=False):
+            for c in r["clientes"]:
+                asignado.setdefault(c["codigo"], r["route_id"])
+        propuestos = {c["codigo"]: c["estado"] for c in self.estado.listar_candidatos(route_id)}
+        out = []
+        for cod, nombre, saldo in self.fuente.registros_sap():
+            n = self._norm(nombre)
+            if any(k in n for k in claves):
+                out.append({"codigo": cod, "nombre": nombre, "saldo": round(float(saldo), 2), "ya_en_ruta": asignado.get(cod),
+                            "candidato": propuestos.get(cod)})
+                if len(out) >= limite:
+                    break
+        return out
+
+    # ------------------------------------------------------------------ preparacion de una salida: actualizacion y revision de excepciones
+    def preparar_salida(self, actor: dict, sid: int) -> dict:
+        sal = self.estado.obtener_salida(sid)
+        if not sal:
+            raise ErrorNegocio("Salida no encontrada.", 404)
+        ruta = self.ruta(sal["route_id"])
+        if ruta is None or ruta.implantacion != "OPERATIVA" or not ruta.clientes:
+            raise ErrorNegocio("La ruta no está operativa o no tiene clientes confirmados.", 409)
+        previo = self.estado.resumen_salida_anterior(sal["route_id"], sal["fecha_salida"])
+        resumen, ex = [], {"candidatos_pendientes": [], "sin_datos": [], "pendientes_gerencia": [], "alertas_cobro": [], "cambios_de_clasificacion": [],
+                           "clientes_nuevos": [], "clientes_retirados": [], "omisiones": None, "advertencias": []}
+        for c in ruta.clientes:
+            r = c.resultado
+            resumen.append({"codigo": c.codigo, "folder": c.folder, "calculado": r.calculado, "final": r.final, "promedio_mora": r.promedio_mora, "saldo": c.saldo})
+            if r.final == "SIN_DATOS":
+                ex["sin_datos"].append({"codigo": c.codigo, "folder": c.folder, "nombre": c.nombre})
+            if r.requiere_gerencia:
+                ex["pendientes_gerencia"].append({"codigo": c.codigo, "folder": c.folder, "nombre": c.nombre, "calculado": r.calculado})
+            for a in r.alertas_cobro:
+                ex["alertas_cobro"].append({"codigo": c.codigo, "folder": c.folder, "nombre": c.nombre, "factura": a.numero, "mora": a.mora, "saldo_pendiente": a.saldo_pendiente})
+            if previo:
+                p0 = previo.get(c.codigo)
+                if p0 is None:
+                    ex["clientes_nuevos"].append({"codigo": c.codigo, "folder": c.folder, "nombre": c.nombre})
+                elif p0["final"] != r.final:
+                    ex["cambios_de_clasificacion"].append({"codigo": c.codigo, "folder": c.folder, "nombre": c.nombre, "antes": p0["final"], "ahora": r.final})
+        if previo:
+            actuales = {c.codigo for c in ruta.clientes}
+            ex["clientes_retirados"] = [{"codigo": k, "folder": v["folder"]} for k, v in previo.items() if k not in actuales]
+        ex["candidatos_pendientes"] = [{"id": c["id"], "codigo": c["codigo"], "nombre": c["nombre"]} for c in self.estado.listar_candidatos(sal["route_id"], "propuesta")]
+        if ruta.requiere_hojas_visita:
+            ex["omisiones"] = self.estado.omisiones_consecutivas(sal["route_id"], 3)
+        if not (self.fuente and self.fuente.en_vivo):
+            ex["advertencias"].append(f"Datos del snapshot {ruta.fuente.get('fecha_corte')}, NO en vivo: saldos y alertas de cobro pueden estar desactualizados.")
+        total = sum(len(v) for k, v in ex.items() if isinstance(v, list) and k != "advertencias")
+        if ex["omisiones"]:
+            total += len(ex["omisiones"]["omitidas_confirmadas"]) + len(ex["omisiones"]["sin_registro_en_salidas"])
+        reporte = {**ex, "total_excepciones": total, "requiere_revision": total > 0, "fecha_corte_datos": ruta.fuente.get("fecha_corte")}
+        return self.estado.guardar_preparacion(actor, sid, resumen, reporte)
+
+    # ------------------------------------------------------------------ documentos reutilizables (hojas de visita)
+    def _carpeta_docs(self) -> Path:
+        return self.estado_dir / "documentos"
+
+    def importar_documento(self, actor: dict, route_id: str, archivo: str, motivo: str = "", nueva_version: bool = False, confirmado: bool = False) -> dict:
+        """Registra (v1) o versiona un documento de hojas de visita leyendo un .xlsx de <datos>/01_Rutas. El original se conserva intacto y el
+        almacenado queda en la carpeta PRIVADA de estado (fuera de Git y del frontend publico)."""
+        from .hojas_visita_excel import leer_hojas_visita
+        if self.data_dir is None:
+            raise ErrorNegocio("No hay directorio de datos configurado.", 400)
+        base = (self.data_dir / "01_Rutas").resolve()
+        origen = (base / archivo).resolve()
+        if base not in origen.parents or origen.suffix.lower() != ".xlsx" or not origen.is_file():
+            raise ErrorNegocio("Archivo no válido: debe ser un .xlsx dentro de 01_Rutas del directorio de datos.", 400)
+        try:
+            contenido = leer_hojas_visita(origen)
+        except Exception as e:  # noqa: BLE001
+            raise ErrorNegocio(f"No se pudo leer el documento: {type(e).__name__}", 400) from e
+        if not contenido["total_clientes"]:
+            raise ErrorNegocio("El documento no contiene clientes reconocibles (se espera COLOR / CÓDIGO SAP / SALÓN-CLIENTE).", 400)
+        return self.estado.registrar_documento(actor, route_id, "HOJA_VISITA", origen.name, origen.read_bytes(), contenido, self._carpeta_docs(),
+                                               motivo, nueva_version, confirmado)
+
+    def bytes_documento(self, did: int):
+        d = self.estado.obtener_documento(did)
+        if not d:
+            raise ErrorNegocio("Documento no encontrado.", 404)
+        ruta = (self._carpeta_docs() / d["almacenado"]).resolve()
+        if self._carpeta_docs().resolve() not in ruta.parents or not ruta.is_file():
+            raise ErrorNegocio("Archivo del documento no disponible.", 404)
+        datos = ruta.read_bytes()
+        import hashlib
+        if hashlib.sha256(datos).hexdigest() != d["sha256"]:
+            raise ErrorNegocio("El archivo almacenado no coincide con su hash registrado (integridad).", 500)
+        return d, datos
+
+    def proponer_desde_documento(self, actor: dict, route_id: str, did: int) -> List[dict]:
+        """Propone (NO confirma) los clientes del documento como candidatos de la ruta, en el orden del documento. La confirmacion es humana."""
+        d = self.estado.obtener_documento(did)
+        if not d or d["route_id"] != route_id:
+            raise ErrorNegocio("Documento no encontrado.", 404)
+        items = [{"codigo": c["codigo"], "nombre": c["nombre"], "zona": ""} for h in d["contenido"]["hojas"] for c in h["clientes"]]
+        return self.estado.proponer_candidatos(actor, route_id, items, f"documento v{d['version']}")

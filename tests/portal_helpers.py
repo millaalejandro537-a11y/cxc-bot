@@ -33,11 +33,11 @@ class Reloj:
         self.t = self.t + timedelta(seconds=segundos)
 
 
-def crear_entorno(tmp_path: Path, reloj=None, hosts=None, https=False, confiar_proxy=False, limitador=None):
+def crear_entorno(tmp_path: Path, reloj=None, hosts=None, https=False, confiar_proxy=False, limitador=None, **ctx_kw):
     estado = Estado(tmp_path / "estado" / "portal.sqlite3", **({"reloj": reloj} if reloj else {}))
     sembrar_demo(estado, ACTOR)
     estado.crear_vendedor(ACTOR, "Otro Vendedor")
-    estado.guardar_ruta(ACTOR, "OTRA", "Ruta de Otro", "Otro Vendedor", "LOCAL", None, zonas={"OT": "Otra zona"},
+    estado.guardar_ruta(ACTOR, "OTRA", "Ruta de Otro", "Otro Vendedor", "LOCAL", None, zonas={"OT": "Otra zona"}, requiere_hojas_visita=True,
                         clientes=[{"codigo": "C90101", "folder": "1 OT", "zona": "OT", "nombre": "CLIENTE AJENO"}])
     for usuario, nombre, rol, clave, vend in (("admin1", "Admin", "admin", CLAVE_ADMIN, None), ("ger1", "Gerente Uno", "gerencia", CLAVE_GER, None),
                                               ("ven1", "Vendedor Demo", "vendedor", CLAVE_VEN, "Vendedor Demo"),
@@ -45,7 +45,7 @@ def crear_entorno(tmp_path: Path, reloj=None, hosts=None, https=False, confiar_p
         estado.crear_usuario(ACTOR, usuario, nombre, rol, clave, vend, debe_cambiar=False)
     servicio = PortalServicio(estado, FuenteSintetica(), tmp_path / "estado", None, tmp_path / "datos")
     (tmp_path / "datos").mkdir(exist_ok=True)
-    ctx = Contexto(servicio, estado, https=https, hosts_permitidos=hosts, confiar_proxy=confiar_proxy, limitador=limitador)
+    ctx = Contexto(servicio, estado, https=https, hosts_permitidos=hosts, confiar_proxy=confiar_proxy, limitador=limitador, **ctx_kw)
     return ctx
 
 
@@ -67,8 +67,8 @@ class Servidor:
 
 
 class Cliente:
-    def __init__(self, puerto, host="127.0.0.1", tls=None):
-        self.puerto, self.host, self.tls = puerto, host, tls
+    def __init__(self, puerto, host="127.0.0.1", tls=None, extra=None):
+        self.puerto, self.host, self.tls, self.extra = puerto, host, tls, extra or {}
         self.cookie, self.csrf, self.set_cookie = None, None, None
 
     def _con(self):
@@ -88,6 +88,7 @@ class Cliente:
         if cuerpo is not None:
             datos = json.dumps(cuerpo).encode()
             h["Content-Type"] = "application/json"
+        h.update(self.extra)
         h.update(cabeceras or {})
         c = self._con()
         c.request(metodo, ruta, body=datos, headers=h)
@@ -103,9 +104,16 @@ class Cliente:
 
     def login(self, usuario, clave):
         st, cab, js = self.pedir("POST", "/api/auth/login", {"usuario": usuario, "password": clave}, csrf=False)
-        if st == 200:
+        if st == 200 and "set-cookie" in cab:  # con 2FA el primer paso no abre sesion (solo devuelve un reto)
             self.set_cookie = cab.get("set-cookie", "")
             self.cookie = self.set_cookie.split(";")[0].split("=", 1)[1]
+            self.csrf = js["csrf"]
+        return st, cab, js
+
+    def login_2fa(self, reto, codigo):
+        st, cab, js = self.pedir("POST", "/api/auth/login/2fa", {"reto": reto, "codigo": codigo}, csrf=False)
+        if st == 200 and "set-cookie" in cab:
+            self.cookie = cab["set-cookie"].split(";")[0].split("=", 1)[1]
             self.csrf = js["csrf"]
         return st, cab, js
 

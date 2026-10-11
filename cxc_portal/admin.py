@@ -64,6 +64,67 @@ def cmd_usuarios(a) -> int:
     return 0
 
 
+def cmd_respaldar(a) -> int:
+    destino = _estado(a).respaldar(Path(a.destino), a.conservar)
+    print(f"Respaldo verificado: {destino} (+ .sha256)")
+    return 0
+
+
+def cmd_restaurar(a) -> int:
+    try:
+        d = Estado.restaurar(Path(a.archivo), Path(a.estado) / "portal.sqlite3", a.forzar)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(f"Restaurado en {d}. Reinicie el portal.")
+    return 0
+
+
+def cmd_exportar(a) -> int:
+    import json
+    destino = Path(a.destino)
+    destino.write_text(json.dumps(_estado(a).exportar_json(), ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    try:
+        os.chmod(destino, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    print(f"Exportación escrita en {destino}. Contiene hashes de contraseña y semillas 2FA: trátela como secreto.")
+    return 0
+
+
+def cmd_importar(a) -> int:
+    import json
+    try:
+        print(_estado(a).importar_json(json.loads(Path(a.archivo).read_text(encoding="utf-8"))))
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    return 0
+
+
+def cmd_restablecer_2fa(a) -> int:
+    est = _estado(a)
+    uid = next((u["id"] for u in est.listar_usuarios() if u["usuario"].lower() == a.usuario.lower()), None)
+    if uid is None:
+        raise SystemExit("Usuario no encontrado.")
+    est.totp_restablecer(ACTOR, uid)
+    print("Segundo factor restablecido: deberá volver a activarlo en su próximo acceso.")
+    return 0
+
+
+def cmd_importar_documento(a) -> int:
+    from .store import PortalServicio
+    est = _estado(a)
+    sv = PortalServicio(est, None, Path(a.estado), None, Path(a.datos))
+    try:
+        d = sv.importar_documento(ACTOR, a.ruta.upper(), a.archivo, a.motivo or "", a.nueva_version, a.confirmar)
+        if a.proponer_clientes:
+            n = len(sv.proponer_desde_documento(ACTOR, a.ruta.upper(), d["id"]))
+            print(f"{n} cliente(s) propuesto(s) como candidatos (pendientes de confirmación humana).")
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(f"Documento v{d['version']} registrado ({d['contenido']['total_clientes']} clientes, {len(d['contenido']['hojas'])} hojas, sha256 {d['sha256'][:16]}…).")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -79,6 +140,25 @@ def main(argv=None) -> int:
             p.add_argument("--generar-clave", action="store_true")
         if nombre == "sembrar":
             p.add_argument("--datos", required=True)
+    for nombre, fn, extra in (("respaldar", cmd_respaldar, [("--destino", dict(required=True)), ("--conservar", dict(type=int, default=14))]),
+                              ("restaurar", cmd_restaurar, [("--archivo", dict(required=True)), ("--forzar", dict(action="store_true"))]),
+                              ("exportar", cmd_exportar, [("--destino", dict(required=True))]), ("importar", cmd_importar, [("--archivo", dict(required=True))]),
+                              ("restablecer-2fa", cmd_restablecer_2fa, [("--usuario", dict(required=True))])):
+        p = sub.add_parser(nombre)
+        p.add_argument("--estado", required=True)
+        for flag, kw in extra:
+            p.add_argument(flag, **kw)
+        p.set_defaults(func=fn)
+    p = sub.add_parser("importar-documento")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--datos", required=True)
+    p.add_argument("--ruta", required=True)
+    p.add_argument("--archivo", required=True, help="Nombre del .xlsx dentro de <datos>/01_Rutas")
+    p.add_argument("--motivo")
+    p.add_argument("--nueva-version", action="store_true")
+    p.add_argument("--confirmar", action="store_true")
+    p.add_argument("--proponer-clientes", action="store_true")
+    p.set_defaults(func=cmd_importar_documento)
     a = ap.parse_args(argv)
     return a.func(a)
 

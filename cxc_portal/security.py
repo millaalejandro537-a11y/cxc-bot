@@ -97,3 +97,53 @@ class LimitadorIntentos:
 
     def exito(self, clave: str) -> None:
         self._fallos.pop(clave, None)
+
+
+# ----------------------------------------------------------------------------- segundo factor (TOTP, RFC 6238; compatible con Google/Microsoft Authenticator, Authy, 1Password)
+import struct  # noqa: E402
+
+TOTP_PERIODO = 30
+TOTP_DIGITOS = 6
+TOTP_VENTANA = 1          # tolera ±1 intervalo (reloj desfasado)
+CODIGOS_RECUPERACION = 8
+
+
+def totp_nuevo_secreto() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+
+
+def _hotp(secreto: str, contador: int) -> str:
+    clave = base64.b32decode(secreto + "=" * (-len(secreto) % 8), casefold=True)
+    h = hmac.new(clave, struct.pack(">Q", contador), hashlib.sha1).digest()
+    o = h[-1] & 0x0F
+    n = (struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** TOTP_DIGITOS)
+    return str(n).zfill(TOTP_DIGITOS)
+
+
+def totp_codigo(secreto: str, instante: float) -> str:
+    return _hotp(secreto, int(instante // TOTP_PERIODO))
+
+
+def totp_verificar(secreto: str, codigo: str, instante: float, ultimo_paso: int = 0) -> Optional[int]:
+    """Devuelve el paso (intervalo) aceptado o None. `ultimo_paso` impide REUTILIZAR un codigo ya usado (anti-repeticion)."""
+    codigo = "".join(ch for ch in str(codigo or "") if ch.isdigit())
+    if len(codigo) != TOTP_DIGITOS:
+        return None
+    actual = int(instante // TOTP_PERIODO)
+    for paso in range(actual - TOTP_VENTANA, actual + TOTP_VENTANA + 1):
+        if paso > ultimo_paso and hmac.compare_digest(_hotp(secreto, paso), codigo):
+            return paso
+    return None
+
+
+def totp_uri(secreto: str, usuario: str, emisor: str = "Portal CxC Cosprobell") -> str:
+    from urllib.parse import quote
+    return f"otpauth://totp/{quote(emisor)}:{quote(usuario)}?secret={secreto}&issuer={quote(emisor)}&digits={TOTP_DIGITOS}&period={TOTP_PERIODO}"
+
+
+def codigos_recuperacion_nuevos() -> list:
+    return [secrets.token_hex(4) + "-" + secrets.token_hex(4) for _ in range(CODIGOS_RECUPERACION)]
+
+
+def hash_recuperacion(codigo: str) -> str:
+    return hashlib.sha256(codigo.strip().lower().encode("utf-8")).hexdigest()
