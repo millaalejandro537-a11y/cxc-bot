@@ -12,7 +12,7 @@ import pytest
 
 from cxc_portal.estado import ErrorNegocio
 from cxc_portal.flujo import FlujoOperativo, NotificadorSimulado, huella_excel
-from tests.portal_helpers import ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, CLAVE_VEN2, Servidor, cliente_con_login, crear_entorno
+from tests.portal_helpers import ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, CLAVE_VEN2, FuenteApta, Servidor, cliente_con_login, crear_entorno
 
 FIXTURE = Path("tests/fixtures/rutas_reales/LAS VEGAS MAYO.xlsx")
 HOY = {"d": date(2026, 10, 12)}
@@ -133,40 +133,25 @@ def _preparar_lv(ctx, fecha="2026-10-20"):
     return sid
 
 
-def test_no_se_publica_excel_sin_revision_ni_con_candidatos_pendientes(env):
-    _, ctx, _ = env
-    sid = ctx.estado.crear_salida(ACTOR, "LAS_VEGAS", "2026-10-20")["id"]
-    with pytest.raises(ErrorNegocio, match="Prepare la salida"):
-        ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
-    ctx.flujo.preparar(ACTOR, sid)
-    with pytest.raises(ErrorNegocio, match="revisión humana"):
-        ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
-    ctx.estado.revisar_salida(ACTOR, sid, "Excepciones revisadas.")
-    ctx.estado.proponer_candidatos(ACTOR, "LAS_VEGAS", [{"codigo": "C90009", "nombre": "NUEVO"}])
-    with pytest.raises(ErrorNegocio, match="sin confirmar"):
-        ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
-    assert ctx.estado.listar_excel("LAS_VEGAS") == []
-
-
-def test_excel_versionado_actual_historico_idempotente_e_inmutable(env):
+def test_excel_versionado_borrador_actual_historico_idempotente_e_inmutable(env):
     _, ctx, tmp = env
+    ctx.servicio.fuente = FuenteApta()           # fuente validada (doble de prueba): sin excepciones que decidan, se publica normalmente
+    ctx.servicio.invalidar()
     sid = _preparar_lv(ctx)
-    ctx.estado.revisar_salida(ACTOR, sid, "Excepciones revisadas.")
     e1 = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
-    assert e1["creada"] and e1["version"] == 1 and e1["estado"] == "ACTUAL" and e1["borrador"] == 1 and "/Actual/" in e1["archivo"]
+    assert e1["creada"] and e1["version"] == 1 and e1["estado"] == "ACTUAL" and e1["borrador"] == 0 and "/Actual/" in e1["archivo"] and e1["publicable"]
     wb = openpyxl.load_workbook(ctx.estado.carpeta_excel / e1["archivo"])
     assert len(wb.sheetnames) == 2                                                  # portada + datos SAP: solo dos hojas
     e1b = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")                   # repeticion con el mismo contenido
     assert not e1b["creada"] and e1b["id"] == e1["id"] and len(ctx.estado.listar_excel("LAS_VEGAS")) == 1
     # cambia el roster (cliente nuevo confirmado) -> version 2; la 1 pasa a Historico sin tocarse
-    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90004", "SALON DEMO CANDIDATO A SOLO CONTADO", "LV")
+    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90006", "SALON DEMO EN PRUEBA", "LV")
     e2 = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
     assert e2["creada"] and e2["version"] == 2 and e2["clientes"] == 4
     versiones = {v["version"]: v for v in ctx.estado.listar_excel("LAS_VEGAS")}
     assert versiones[1]["estado"] == "HISTORICO" and "/Historico/" in versiones[1]["archivo"] and versiones[2]["estado"] == "ACTUAL"
     f1 = ctx.estado.carpeta_excel / versiones[1]["archivo"]
     assert f1.is_file() and hashlib.sha256(f1.read_bytes()).hexdigest() == versiones[1]["sha256"]       # el historico conserva su contenido exacto
-    assert not (f1.stat().st_mode & stat.S_IWUSR) or True                                                 # solo lectura donde el SO lo permite
     assert not list((ctx.estado.carpeta_excel / "LAS_VEGAS" / "Actual").glob("v0001*"))
     assert ctx.estado.verificar_excel() == []
     f1.chmod(0o666)
@@ -248,8 +233,8 @@ def test_oportunidades_clientes_a_con_compras_esporadicas(env):
     from cxc_portal import dashboard as dash
     _, ctx, _ = env
     op = dash.oportunidades(ctx.servicio, {"DEMO": ctx.servicio.ruta("DEMO")})
-    assert "SUPUESTO" in op["criterio"]
-    assert all(o["codigo"] and o["facturas_ventana"] <= dash.COMPRAS_ESPORADICAS_MAX for o in op["oportunidades"])
+    assert "aprobada" in op["criterio"] and "solo informativa" in op["criterio"]
+    assert op["informativa"] is True and all(o["codigo"] and o["facturas_ventana"] <= 2 for o in op["oportunidades"])
 
 
 def test_el_notificador_simulado_no_envia_nada_y_el_candado_esta_cerrado():
@@ -262,7 +247,6 @@ def test_el_notificador_simulado_no_envia_nada_y_el_candado_esta_cerrado():
 def test_excel_versionado_respeta_la_visibilidad_por_ruta_y_exige_csrf(env):
     s, ctx, _ = env
     sid = _preparar_lv(ctx)
-    ctx.estado.revisar_salida(ACTOR, sid, "Excepciones revisadas.")
     e = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
     ven, ven2, ger = (cliente_con_login(s, u, c) for u, c in (("ven1", CLAVE_VEN), ("ven2", CLAVE_VEN2), ("ger1", CLAVE_GER)))
     assert ven.get(f"/api/excel/{e['id']}/descargar")[0] == 200

@@ -40,6 +40,7 @@ COLUMNAS_NUEVAS = {
               ("implantacion", "TEXT NOT NULL DEFAULT 'OPERATIVA'")],
     "visitas": [("cobro", "REAL"), ("venta", "REAL")],
     "cola_impresion": [("excel_id", "INTEGER")],
+    "salidas": [("revisada_rol", "TEXT")],
     "usuarios": [("totp_secret", "TEXT"), ("totp_activo", "INTEGER NOT NULL DEFAULT 0"), ("recovery_hashes", "TEXT"), ("totp_ultimo_paso", "INTEGER NOT NULL DEFAULT 0")],
 }
 
@@ -259,7 +260,7 @@ class OperacionesMixin:
             c.executemany("INSERT INTO salida_resumen(salida_id, codigo, folder, calculado, final, promedio_mora, saldo) VALUES (?,?,?,?,?,?,?)",
                           [(sid, r["codigo"], r["folder"], r["calculado"], r["final"], r["promedio_mora"], r["saldo"]) for r in resumen])
             c.execute("UPDATE salidas SET estado = CASE WHEN estado = 'programada' THEN 'preparada' ELSE estado END, preparada_en = ?, reporte_excepciones = ?, "
-                      "revisada_por = NULL, revisada_en = NULL, revision_nota = NULL WHERE id = ?", (self._t(), json.dumps(reporte, ensure_ascii=False, default=str), sid))
+                      "revisada_por = NULL, revisada_en = NULL, revision_nota = NULL, revisada_rol = NULL WHERE id = ?", (self._t(), json.dumps(reporte, ensure_ascii=False, default=str), sid))
             self.auditar(c, actor, "salida.preparar", "salida", str(sid), {"excepciones": reporte.get("total_excepciones")})
             return self._salida(c, sid)
 
@@ -281,7 +282,7 @@ class OperacionesMixin:
                 raise ErrorNegocio("Salida no encontrada.", 404)
             if not s["reporte_excepciones"]:
                 raise ErrorNegocio("La salida aún no fue preparada.", 409)
-            c.execute("UPDATE salidas SET revisada_por = ?, revisada_en = ?, revision_nota = ? WHERE id = ?", (actor.get("usuario"), self._t(), nota.strip(), sid))
+            c.execute("UPDATE salidas SET revisada_por = ?, revisada_en = ?, revision_nota = ?, revisada_rol = ? WHERE id = ?", (actor.get("usuario"), self._t(), nota.strip(), actor.get("rol"), sid))
             self.auditar(c, actor, "salida.revisar", "salida", str(sid), {"nota": nota})
             return self._salida(c, sid)
 

@@ -32,7 +32,7 @@ export function Calendario({ rutas, user }) {
         <thead><tr><th>Salida</th><th>Ruta</th><th>Vendedor</th><th>Se prepara el</th><th>Estado</th><th>Excepciones</th></tr></thead>
         <tbody>{(d?.salidas || []).map((s) => (
           <tr key={s.id}><td><b>{fdate(s.fecha_salida)}</b></td><td>{s.ruta_nombre}</td><td>{s.vendedor}</td><td>{fdate(s.fecha_preparacion)}</td>
-            <td>{PREP[s.preparacion] || s.preparacion}</td><td>{s.excepciones ?? '—'}{s.revisada ? ' ✓' : ''}</td></tr>))}
+            <td>{PREP[s.preparacion] || s.preparacion}</td><td>{s.excepciones ?? '—'}{s.requiere_revision ? (s.revisada ? ' · revisada ✓' : ' · requiere revisión de gerencia') : ''}</td></tr>))}
           {d && d.salidas.length === 0 && <tr><td colSpan={6} className="muted">Sin salidas programadas.</td></tr>}</tbody>
       </table></div>
       {gestiona && (
@@ -87,6 +87,7 @@ export function Avisos({ rutas, user }) {
             {gestiona && <td>{a.estado === 'nueva' && <button className="sec" onClick={() => atender(a, 'vista')}>Visto</button>} {a.estado !== 'cerrada' && <button className="sec" onClick={() => atender(a, 'cerrada')}>Cerrar</button>}</td>}</tr>))}
           {av.length === 0 && <tr><td colSpan={5} className="muted">Sin avisos.</td></tr>}</tbody>
       </table></div>
+      {gestiona && <Parametros />}
       <h3>Notificaciones (simuladas)</h3>
       <p className="muted small">No se envía ningún mensaje fuera del sistema; aquí se ve lo que se enviaría y a quién.</p>
       <div className="tablewrap"><table>
@@ -95,6 +96,26 @@ export function Avisos({ rutas, user }) {
           {no.length === 0 && <tr><td colSpan={3} className="muted">Sin notificaciones.</td></tr>}</tbody>
       </table></div>
     </>
+  )
+}
+
+function Parametros() {
+  const [c, setC] = useState(null)
+  const [msg, setMsg] = useState(null)
+  const cargar = useCallback(() => api('/configuracion').then(setC).catch((e) => setMsg(e.message)), [])
+  useEffect(() => { cargar() }, [cargar])
+  const guardar = async (clave, valor) => { setMsg(null); try { await post('/admin/configuracion', { clave, valor: Number(valor) }); setMsg('Parámetro guardado (queda auditado).'); cargar() } catch (e) { setMsg(e.message) } }
+  if (!c) return null
+  return (
+    <details><summary><b>Parámetros de avisos y oportunidades</b></summary>
+      {msg && <p className="aviso">{msg}</p>}
+      {Object.keys(c.valores).map((k) => (
+        <form key={k} className="form" onSubmit={(e) => { e.preventDefault(); guardar(k, e.target.elements.v.value) }}>
+          <label>{c.descripcion[k]}<input name="v" type="number" min={c.rangos[k][0]} max={c.rangos[k][1]} defaultValue={c.valores[k]} key={c.valores[k]} /></label>
+          <small className="muted">Por defecto {c.por_defecto[k]} · rango {c.rangos[k][0]}–{c.rangos[k][1]}</small>
+          <button type="submit">Guardar</button>
+        </form>))}
+    </details>
   )
 }
 
@@ -136,7 +157,7 @@ export function Dashboard({ user }) {
       <p>{Object.entries(d.alertas.por_severidad).map(([k, v]) => `${SEV[k]}: ${v}`).join(' · ')}</p>
       <h3>Pendientes de decisión de gerencia ({d.decisiones.pendientes_de_gerencia.length})</h3>
       <ul className="notas">{d.decisiones.pendientes_de_gerencia.map((c) => <li key={c.codigo}>{c.codigo} {c.cliente} · {c.calculado}</li>)}</ul>
-      <h3>Oportunidades comerciales</h3>
+      <h3>Oportunidades comerciales (solo informativas)</h3>
       <p className="muted small">{d.oportunidades.criterio}</p>
       <ul className="notas">{d.oportunidades.oportunidades.map((o) => <li key={o.codigo}>{o.folder} {o.cliente} · última compra {fdate(o.ultima_compra)} ({o.dias_desde_ultima ?? '—'} d) · {o.facturas_ventana} factura(s) en la ventana</li>)}</ul>
       <h3>Cumplimiento de rutas</h3>
@@ -166,13 +187,13 @@ export function ExcelSalida({ salida, ruta, gestiona, todas }) {
       {gestiona && (
         <div className="filtros">
           <select value={base} onChange={(e) => setBase(e.target.value)} aria-label="Archivo base">{bases.map((b) => <option key={b}>{b}</option>)}</select>
-          <button disabled={!base} onClick={() => accion(() => post(`/salidas/${salida.id}/excel`, { base }), (r) => (r.creada ? `Versión ${r.version} publicada en Actual.` : 'Sin cambios: ya existe esta versión.'))}>Generar Excel (requiere revisión)</button>
+          <button disabled={!base} onClick={() => accion(() => post(`/salidas/${salida.id}/excel`, { base }), (r) => (r.publicable ? (r.promovida ? `Versión ${r.version} publicada en Actual.` : r.creada ? `Versión ${r.version} publicada en Actual.` : 'Sin cambios: ya está publicada.') : `Borrador v${r.version}${r.creada ? ' generado' : ' (sin cambios)'}; no se publica: ${r.motivos.join(' ')}`))}>Generar Excel</button>
           <button className="sec" onClick={() => accion(() => post(`/salidas/${salida.id}/impresion`), (r) => `Impresión: ${r.creadas.length} solicitud(es) nueva(s), ${r.existentes.length} existente(s)${r.omitidas.length ? ' · ' + r.omitidas.map((o) => o.motivo).join(' ') : ''}`)}>Preparar impresión</button>
           {anterior && <button className="sec" onClick={() => accion(async () => setCmp(await api(`/comparar-salidas?a=${anterior.id}&b=${salida.id}`)), 'Comparación lista.')}>Comparar con {fdate(anterior.fecha_salida)}</button>}
         </div>
       )}
       <div className="tablewrap"><table><thead><tr><th>Versión</th><th>Carpeta</th><th>Salida</th><th>Fuente</th><th /></tr></thead>
-        <tbody>{(vers?.versiones || []).map((v) => <tr key={v.id}><td>v{v.version}{v.borrador ? ' · BORRADOR' : ''}</td><td>{v.estado === 'ACTUAL' ? 'Actual' : 'Histórico'}</td><td>{fdate(v.fecha_salida)}</td><td className="small">{v.fuente_tipo} · {fdate(v.fuente_corte)}</td>
+        <tbody>{(vers?.versiones || []).map((v) => <tr key={v.id}><td>v{v.version}{v.borrador ? ' · BORRADOR' : ''}</td><td>{v.estado === 'ACTUAL' ? 'Actual' : v.estado === 'BORRADOR' ? 'Borrador' : 'Histórico'}</td><td>{fdate(v.fecha_salida)}</td><td className="small">{v.fuente_tipo} · {fdate(v.fuente_corte)}{v.motivos_borrador && JSON.parse(v.motivos_borrador).length > 0 ? <><br />{JSON.parse(v.motivos_borrador).join(' ')}</> : null}</td>
           <td><a href={`/api/excel/${v.id}/descargar`}>Descargar</a></td></tr>)}
           {vers && vers.versiones.length === 0 && <tr><td colSpan={5} className="muted">Aún no hay Excel publicado para esta ruta.</td></tr>}</tbody></table></div>
       {cmp && (

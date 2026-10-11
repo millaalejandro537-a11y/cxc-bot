@@ -11,22 +11,23 @@ from typing import Dict, List, Optional
 
 from .fuentes import es_operable
 
-# SUPUESTOS de "oportunidad comercial" (a confirmar con gerencia): cliente clasificado A con 2 o menos facturas en los ultimos 180 dias.
-VENTANA_OPORTUNIDAD_DIAS = 180
-COMPRAS_ESPORADICAS_MAX = 2
+# Regla APROBADA de "oportunidad comercial" (solo informativa): cliente clasificado A con 2 o menos facturas en los ultimos 180 dias.
+# Los valores salen de la configuracion auditada (por defecto 180 y 2). NUNCA genera avisos, notificaciones ni decisiones.
 
 
 def _clientes(rutas) -> List[tuple]:
     return [(r, c) for r in rutas.values() for c in r.clientes]
 
 
-def oportunidades(servicio, rutas) -> dict:
+def oportunidades(servicio, rutas, cfg: Optional[dict] = None) -> dict:
     """Clientes excelentes (A) con compras esporadicas. Solo sugiere: la visita/accion comercial la decide una persona."""
     f = servicio.fuente
     if not es_operable(f):
         return {"criterio": "Requiere una fuente con facturas.", "oportunidades": []}
     corte = f.fecha_corte
-    desde = corte - timedelta(days=VENTANA_OPORTUNIDAD_DIAS)
+    cfg = cfg or servicio.estado.configuracion()
+    ventana, maximo = cfg["oportunidad_ventana_dias"], cfg["oportunidad_max_facturas"]
+    desde = corte - timedelta(days=ventana)
     codigos = [c.codigo for _, c in _clientes(rutas) if c.resultado.final == "A"]
     facturas = f.facturas_por_cliente(codigos)
     out = []
@@ -35,13 +36,13 @@ def oportunidades(servicio, rutas) -> dict:
             continue
         fs = facturas.get(c.codigo.upper(), [])
         recientes = [x for x in fs if x.fecha_factura >= desde]
-        if len(recientes) <= COMPRAS_ESPORADICAS_MAX:
+        if len(recientes) <= maximo:
             ultima = max((x.fecha_factura for x in fs), default=None)
             out.append({"codigo": c.codigo, "cliente": c.nombre, "ruta": r.route_id, "vendedor": r.vendedor, "folder": c.folder,
                         "facturas_ventana": len(recientes), "ultima_compra": ultima.isoformat() if ultima else None,
                         "dias_desde_ultima": (corte - ultima).days if ultima else None})
     out.sort(key=lambda x: (x["dias_desde_ultima"] is None, -(x["dias_desde_ultima"] or 0)))
-    return {"criterio": f"SUPUESTO: cliente A con ≤ {COMPRAS_ESPORADICAS_MAX} facturas en los últimos {VENTANA_OPORTUNIDAD_DIAS} días antes del corte {corte.isoformat()}.",
+    return {"informativa": True, "criterio": f"Regla aprobada (solo informativa): cliente A con ≤ {maximo} facturas en los últimos {ventana} días antes del corte {corte.isoformat()}.",
             "fecha_corte": corte.isoformat(), "oportunidades": out}
 
 

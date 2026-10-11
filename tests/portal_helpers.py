@@ -129,3 +129,9 @@ def cliente_con_login(servidor, usuario, clave, **kw):
     st, _, _ = c.login(usuario, clave)
     assert st == 200, (usuario, st)
     return c
+
+
+class FuenteApta(FuenteSintetica):
+    """DOBLE DE PRUEBA: una fuente sintetica que se declara validada y vigente para ejercitar la publicacion normal. No es una fuente real."""
+
+    apta_para_publicar = True

@@ -27,15 +27,51 @@ CREATE TABLE IF NOT EXISTS notificaciones (
 CREATE TABLE IF NOT EXISTS excel_rutas (
     id INTEGER PRIMARY KEY, route_id TEXT NOT NULL REFERENCES rutas(route_id), salida_id INTEGER REFERENCES salidas(id), fecha_salida TEXT NOT NULL,
     version INTEGER NOT NULL, archivo TEXT NOT NULL, sha256 TEXT NOT NULL, huella TEXT NOT NULL, bytes INTEGER NOT NULL,
-    estado TEXT NOT NULL DEFAULT 'ACTUAL' CHECK (estado IN ('ACTUAL','HISTORICO')), borrador INTEGER NOT NULL DEFAULT 1,
-    fuente_tipo TEXT, fuente_corte TEXT, clientes INTEGER, advertencias TEXT, creado_por TEXT, creado_en TEXT NOT NULL,
+    estado TEXT NOT NULL DEFAULT 'ACTUAL' CHECK (estado IN ('BORRADOR','ACTUAL','HISTORICO')), borrador INTEGER NOT NULL DEFAULT 1,
+    fuente_tipo TEXT, fuente_corte TEXT, clientes INTEGER, advertencias TEXT, motivos_borrador TEXT, creado_por TEXT, creado_en TEXT NOT NULL,
     UNIQUE (route_id, version));
+CREATE TABLE IF NOT EXISTS configuracion (clave TEXT PRIMARY KEY, valor TEXT NOT NULL, actualizado_por TEXT, actualizado TEXT NOT NULL);
 """
 
 SEVERIDADES = ("info", "media", "alta")
 
 
 class FlujoMixin:
+    # ------------------------------------------------------------------ configuracion (umbrales aprobados, editables y auditados)
+    CONFIG_DEFECTO = {"umbral_aumento_mora_dias": 5, "oportunidad_ventana_dias": 180, "oportunidad_max_facturas": 2}
+    CONFIG_RANGOS = {"umbral_aumento_mora_dias": (1, 90), "oportunidad_ventana_dias": (30, 730), "oportunidad_max_facturas": (0, 24)}
+
+    def configuracion(self) -> Dict[str, int]:
+        with self.tx() as c:
+            guardado = {r["clave"]: r["valor"] for r in c.execute("SELECT clave, valor FROM configuracion")}
+        return {k: int(guardado.get(k, v)) for k, v in self.CONFIG_DEFECTO.items()}
+
+    def fijar_configuracion(self, actor: dict, clave: str, valor) -> Dict[str, int]:
+        from .estado import ErrorNegocio
+        if clave not in self.CONFIG_DEFECTO:
+            raise ErrorNegocio(f"Parámetro desconocido. Use: {', '.join(self.CONFIG_DEFECTO)}.")
+        try:
+            v = int(valor)
+        except (TypeError, ValueError) as e:
+            raise ErrorNegocio("El valor debe ser un número entero.") from e
+        lo, hi = self.CONFIG_RANGOS[clave]
+        if isinstance(valor, bool) or not lo <= v <= hi:
+            raise ErrorNegocio(f"Valor fuera de rango para {clave}: {lo} a {hi}.")
+        anterior = self.configuracion().get(clave)   # fuera de la transaccion: el cerrojo de `tx` no es reentrante
+        with self.tx() as c:
+            c.execute("INSERT INTO configuracion(clave, valor, actualizado_por, actualizado) VALUES (?,?,?,?) "
+                      "ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor, actualizado_por=excluded.actualizado_por, actualizado=excluded.actualizado",
+                      (clave, str(v), actor.get("usuario"), self._t()))
+            self.auditar(c, actor, "configuracion.fijar", "configuracion", clave, {"antes": anterior, "ahora": v})
+        return self.configuracion()
+
+    def rol_de_usuario(self, usuario: Optional[str]) -> Optional[str]:
+        if not usuario:
+            return None
+        with self.tx() as c:
+            r = c.execute("SELECT rol FROM usuarios WHERE usuario = ?", (usuario,)).fetchone()
+            return r["rol"] if r else None
+
     # ------------------------------------------------------------------ feriados
     def listar_feriados(self) -> List[dict]:
         with self.tx() as c:
@@ -143,42 +179,78 @@ class FlujoMixin:
             r = c.execute("SELECT * FROM excel_rutas WHERE route_id = ? AND estado = 'ACTUAL'", (route_id,)).fetchone()
             return dict(r) if r else None
 
+    def excel_borrador(self, route_id: str) -> Optional[dict]:
+        with self.tx() as c:
+            r = c.execute("SELECT * FROM excel_rutas WHERE route_id = ? AND estado = 'BORRADOR'", (route_id,)).fetchone()
+            return dict(r) if r else None
+
     def listar_excel(self, route_id: str) -> List[dict]:
         with self.tx() as c:
             return [dict(r) for r in c.execute("SELECT * FROM excel_rutas WHERE route_id = ? ORDER BY version DESC", (route_id,))]
 
+    def _mover_excel(self, c, fila: dict, carpeta: str, estado: str) -> str:
+        """Mueve un archivo de version a otra carpeta (Borrador / Actual / Historico) sin sobrescribir nunca; el historico queda de solo lectura."""
+        rel = f"{fila['route_id']}/{carpeta}/{Path(fila['archivo']).name}"
+        origen, destino = self.carpeta_excel / fila["archivo"], self.carpeta_excel / rel
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        if origen.is_file() and rel != fila["archivo"]:
+            if destino.exists():
+                raise FileExistsError(f"Ya existe {rel}: no se sobrescribe una version.")
+            os.replace(origen, destino)
+            if carpeta == "Historico":
+                try:
+                    os.chmod(destino, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)   # solo lectura
+                except OSError:
+                    pass
+        c.execute("UPDATE excel_rutas SET estado = ?, archivo = ? WHERE id = ?", (estado, rel, fila["id"]))
+        return rel
+
     def registrar_excel(self, actor: dict, route_id: str, salida_id: Optional[int], fecha_salida: str, nombre: str, datos: bytes, sha256: str, huella: str,
-                        borrador: bool, fuente_tipo: str, fuente_corte: str, clientes: int, advertencias: List[str]) -> dict:
-        """Guarda una version NUEVA en `Actual/` y pasa la anterior a `Historico/` (se mueve, jamas se sobrescribe ni se edita).
-        Si el contenido (huella) es identico al vigente de la misma salida, no crea otra version (idempotente)."""
+                        publicar: bool, fuente_tipo: str, fuente_corte: str, clientes: int, advertencias: List[str], motivos_borrador: Optional[List[str]] = None) -> dict:
+        """Guarda una version del Excel. `publicar=True`: queda en `Actual/` (la anterior pasa a `Historico/`). `publicar=False`: queda como BORRADOR en
+        `Borrador/` y NO desplaza a la publicada. Los archivos se mueven, jamas se sobrescriben ni se editan. Idempotente por huella de contenido:
+        repetir no crea versiones; un borrador identico se PROMUEVE a Actual cuando ya puede publicarse."""
         with self.tx() as c:
             vig = c.execute("SELECT * FROM excel_rutas WHERE route_id = ? AND estado = 'ACTUAL'", (route_id,)).fetchone()
-            if vig and vig["huella"] == huella and vig["fecha_salida"] == fecha_salida:
-                return {**dict(vig), "creada": False}
+            bor = c.execute("SELECT * FROM excel_rutas WHERE route_id = ? AND estado = 'BORRADOR'", (route_id,)).fetchone()
+            vig, bor = (dict(vig) if vig else None), (dict(bor) if bor else None)
+            igual = lambda f: f is not None and f["huella"] == huella and f["fecha_salida"] == fecha_salida
+            if publicar and igual(vig):
+                return {**vig, "creada": False, "promovida": False}
+            if not publicar and (igual(bor) or igual(vig)):
+                dev = bor if igual(bor) else vig
+                if igual(bor):   # el borrador identico se conserva con los motivos vigentes
+                    c.execute("UPDATE excel_rutas SET motivos_borrador = ? WHERE id = ?", (json.dumps(motivos_borrador or [], ensure_ascii=False), bor["id"]))
+                return {**dev, "creada": False, "promovida": False}
+            if publicar and igual(bor):   # promocion: el mismo contenido pasa de Borrador a Actual
+                if vig:
+                    self._mover_excel(c, vig, "Historico", "HISTORICO")
+                self._mover_excel(c, bor, "Actual", "ACTUAL")
+                c.execute("UPDATE excel_rutas SET borrador = 0, motivos_borrador = NULL WHERE id = ?", (bor["id"],))
+                self.auditar(c, actor, "excel.publicar", "ruta", route_id, {"version": bor["version"], "salida": salida_id})
+                return {**dict(c.execute("SELECT * FROM excel_rutas WHERE id = ?", (bor["id"],)).fetchone()), "creada": False, "promovida": True}
             version = (c.execute("SELECT COALESCE(MAX(version),0) AS m FROM excel_rutas WHERE route_id = ?", (route_id,)).fetchone()["m"]) + 1
-            base = self.carpeta_excel / route_id
-            (base / "Actual").mkdir(parents=True, exist_ok=True)
-            (base / "Historico").mkdir(parents=True, exist_ok=True)
-            rel = f"{route_id}/Actual/v{version:04d}_{nombre}"
+            carpeta = "Actual" if publicar else "Borrador"
+            rel = f"{route_id}/{carpeta}/v{version:04d}_{nombre}"
             destino = self.carpeta_excel / rel
+            destino.parent.mkdir(parents=True, exist_ok=True)
             with open(destino, "xb") as f:   # exclusivo: jamas sobrescribe
                 f.write(datos)
-            if vig:
-                origen = self.carpeta_excel / vig["archivo"]
-                nuevo_rel = f"{route_id}/Historico/{Path(vig['archivo']).name}"
-                if origen.is_file():
-                    os.replace(origen, self.carpeta_excel / nuevo_rel)
-                    try:
-                        os.chmod(self.carpeta_excel / nuevo_rel, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)   # solo lectura
-                    except OSError:
-                        pass
-                c.execute("UPDATE excel_rutas SET estado = 'HISTORICO', archivo = ? WHERE id = ?", (nuevo_rel, vig["id"]))
+            if publicar:
+                if vig:
+                    self._mover_excel(c, vig, "Historico", "HISTORICO")
+                if bor:   # un borrador anterior queda superado por la publicacion
+                    self._mover_excel(c, bor, "Historico", "HISTORICO")
+            elif bor:
+                self._mover_excel(c, bor, "Historico", "HISTORICO")
             eid = c.execute("INSERT INTO excel_rutas(route_id, salida_id, fecha_salida, version, archivo, sha256, huella, bytes, estado, borrador, fuente_tipo, fuente_corte, "
-                            "clientes, advertencias, creado_por, creado_en) VALUES (?,?,?,?,?,?,?,?,'ACTUAL',?,?,?,?,?,?,?)",
-                            (route_id, salida_id, fecha_salida, version, rel, sha256, huella, len(datos), int(borrador), fuente_tipo, fuente_corte, clientes,
-                             json.dumps(advertencias, ensure_ascii=False), actor.get("usuario"), self._t())).lastrowid
-            self.auditar(c, actor, "excel.version", "ruta", route_id, {"version": version, "salida": salida_id, "fecha_salida": fecha_salida, "sha256": sha256})
-            return {**dict(c.execute("SELECT * FROM excel_rutas WHERE id = ?", (eid,)).fetchone()), "creada": True}
+                            "clientes, advertencias, motivos_borrador, creado_por, creado_en) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (route_id, salida_id, fecha_salida, version, rel, sha256, huella, len(datos), "ACTUAL" if publicar else "BORRADOR", 0 if publicar else 1,
+                             fuente_tipo, fuente_corte, clientes, json.dumps(advertencias, ensure_ascii=False),
+                             None if publicar else json.dumps(motivos_borrador or [], ensure_ascii=False), actor.get("usuario"), self._t())).lastrowid
+            self.auditar(c, actor, "excel.publicar" if publicar else "excel.borrador", "ruta", route_id,
+                         {"version": version, "salida": salida_id, "fecha_salida": fecha_salida, "sha256": sha256, "motivos": motivos_borrador})
+            return {**dict(c.execute("SELECT * FROM excel_rutas WHERE id = ?", (eid,)).fetchone()), "creada": True, "promovida": False}
 
     def verificar_excel(self) -> List[str]:
         """Integridad de TODAS las versiones: el archivo existe, esta en la carpeta de su estado y su sha256 coincide."""
@@ -188,7 +260,7 @@ class FlujoMixin:
         problemas = []
         for e in filas:
             f = self.carpeta_excel / e["archivo"]
-            carpeta = "Actual" if e["estado"] == "ACTUAL" else "Historico"
+            carpeta = {"ACTUAL": "Actual", "BORRADOR": "Borrador"}.get(e["estado"], "Historico")
             if f"/{carpeta}/" not in e["archivo"]:
                 problemas.append(f"{e['route_id']} v{e['version']}: debería estar en {carpeta}/")
             if not f.is_file():

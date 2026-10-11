@@ -911,6 +911,19 @@ def agente_archivo(ctx: Contexto, p: Peticion):
                      cabeceras={"Content-Disposition": f'attachment; filename="{nombre}"', "X-Content-SHA256": sha})
 
 
+@endpoint("GET", "/api/configuracion", roles=LECTURA_GLOBAL)
+def configuracion_leer(ctx: Contexto, p: Peticion):
+    return Respuesta(datos={"valores": ctx.estado.configuracion(), "por_defecto": ctx.estado.CONFIG_DEFECTO, "rangos": ctx.estado.CONFIG_RANGOS,
+                            "descripcion": {"umbral_aumento_mora_dias": "Aviso cuando la mora promedio aumenta esta cantidad de días o más entre salidas (aprobado: 5).",
+                                            "oportunidad_ventana_dias": "Ventana (días antes del corte) para contar compras de un cliente A (aprobado: 180).",
+                                            "oportunidad_max_facturas": "Oportunidad comercial informativa si el cliente A tiene esta cantidad de facturas o menos en la ventana (aprobado: 2)."}})
+
+
+@endpoint("POST", "/api/admin/configuracion", roles=LECTURA_GLOBAL)
+def configuracion_fijar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos={"valores": ctx.estado.fijar_configuracion(p.usuario, _cuerpo_str(p, "clave"), p.cuerpo.get("valor"))})
+
+
 def make_handler(ctx: Contexto, web_dir: Optional[Path]):
     ctx.estado_auditar = _estado_auditar(ctx)
 

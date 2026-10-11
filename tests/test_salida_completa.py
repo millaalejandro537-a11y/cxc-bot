@@ -84,21 +84,23 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     assert {"CANDIDATO_PENDIENTE_GERENCIA", "DATOS_NO_VIVOS"} <= tipos
     paso(f"Evaluación persistida: {rep['total_excepciones']} excepción(es); avisos {sorted(tipos)}; 0 decisiones automáticas")
 
-    # 4. el Excel no se publica sin revision humana ni con clientes sin confirmar
-    assert ger.post(f"/api/salidas/{sid1}/excel", {"base": "base.xlsx"})[0] == 409
-    paso("Excel bloqueado hasta revisar las excepciones")
-    assert ger.post(f"/api/salidas/{sid1}/revisar", {"nota": "Excepciones revisadas por gerencia (prueba)."})[0] == 200
+    # 4. gestion por excepcion: el borrador siempre se genera; sin fuente validada NO se publica normal
     st, _, e1 = ger.post(f"/api/salidas/{sid1}/excel", {"base": "base.xlsx"})
-    assert st == 201 and e1["version"] == 1 and e1["estado"] == "ACTUAL" and e1["borrador"] == 1
+    assert st == 201 and e1["version"] == 1 and e1["estado"] == "BORRADOR" and e1["borrador"] == 1 and "/Borrador/" in e1["archivo"] and not e1["publicable"]
+    assert any("fuente" in m for m in e1["motivos"]) and any("revisión de gerencia" in m for m in e1["motivos"])
+    paso("Excel v1 generado como BORRADOR (fuente snapshot no validada + excepciones que requieren decisión de gerencia); no se publica")
     assert ger.post(f"/api/salidas/{sid1}/excel", {"base": "base.xlsx"})[0] == 200          # repetir no crea otra version
-    paso("Excel v1 publicado en Actual (BORRADOR: fuente snapshot); repetir es idempotente")
+    assert ger.post(f"/api/salidas/{sid1}/revisar", {"nota": "Revisión de gerencia de la salida 1 (prueba)."})[0] == 200
+    e1r = ger.post(f"/api/salidas/{sid1}/excel", {"base": "base.xlsx"})[2]
+    assert e1r["estado"] == "BORRADOR" and not any("revisión de gerencia" in m for m in e1r["motivos"]) and any("fuente" in m for m in e1r["motivos"])
+    paso("Tras la revisión de gerencia solo queda el motivo de la fuente: sigue siendo borrador hasta tener datos validados; repetir es idempotente")
     st, cab, cuerpo = ven.get(f"/api/excel/{e1['id']}/descargar")
     assert st == 200 and hashlib.sha256(cuerpo).hexdigest() == e1["sha256"]
-    paso("El vendedor de la ruta descarga el Excel y su hash coincide")
+    paso("El vendedor de la ruta descarga el borrador y su hash coincide")
 
     # 5. impresion preparada y agente simulado
     st, _, r = ger.post(f"/api/salidas/{sid1}/impresion", {})
-    assert st == 200 and len(r["creadas"]) == 1 and r["omitidas"][-1]["tipo"] == "EXCEL_RUTA"
+    assert st == 200 and len(r["creadas"]) == 1 and r["omitidas"][-1]["tipo"] == "EXCEL_RUTA" and "BORRADOR" in r["omitidas"][-1]["motivo"]
     token = adm.post("/api/admin/agentes-impresion", {"nombre": "Agente simulado"})[2]["token"]
     imp = ImpresoraSimulada()
     res = AgenteImpresion(TransporteHttp("127.0.0.1", s.puerto, token), imp).vaciar_cola()
@@ -133,14 +135,13 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     camb = {c["codigo"]: c for c in cmp["cambios"]}
     assert camb["C90004"]["antes"] == "CANDIDATO_SOLO_CONTADO" and camb["C90004"]["ahora"] == "SOLO_CONTADO" and camb["C90005"]["tipo"] == "NUEVO"
     paso(f"Salida 2 preparada el 23/10: avisos {sorted(tipos2)}; comparación con la salida 1: {len(cmp['cambios'])} cambio(s)")
-    ger.post(f"/api/salidas/{sid2}/revisar", {"nota": "Revisión de la segunda salida (prueba)."})
     st, _, e2 = ger.post(f"/api/salidas/{sid2}/excel", {"base": "base.xlsx"})
     assert st == 201 and e2["version"] == 2 and e2["clientes"] == 5
     vers = {v["version"]: v for v in ger.get("/api/rutas/LAS_VEGAS/excel")[2]["versiones"]}
-    assert vers[1]["estado"] == "HISTORICO" and vers[2]["estado"] == "ACTUAL"
+    assert vers[1]["estado"] == "HISTORICO" and vers[2]["estado"] == "BORRADOR"
     assert hashlib.sha256((ctx.estado.carpeta_excel / vers[1]["archivo"]).read_bytes()).hexdigest() == e1["sha256"]
     assert ger.get("/api/rutas/LAS_VEGAS/excel")[2]["integridad"] == []
-    paso("Excel v2 (5 clientes) en Actual; la v1 pasó a Histórico con contenido idéntico (hash verificado)")
+    paso("Excel v2 (5 clientes) como borrador vigente; el borrador v1 pasó a Histórico con contenido idéntico (hash verificado)")
 
     # 9. dashboard, notificaciones simuladas y permisos
     d = ger.get("/api/dashboard")[2]
@@ -153,7 +154,7 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
 
     # 10. auditoria y recuperacion
     acciones = {a["accion"] for a in ctx.estado.listar_auditoria(500)}
-    assert {"ciclo.diario", "salida.preparar", "salida.revisar", "excel.version", "decision.registrar", "visita.registrar", "impresion.solicitar", "impresion.resultado"} <= acciones
+    assert {"ciclo.diario", "salida.preparar", "salida.revisar", "excel.borrador", "decision.registrar", "visita.registrar", "impresion.solicitar", "impresion.resultado"} <= acciones
     paso("Auditoría registra ciclo, preparación, revisión, Excel, decisión, visitas e impresión")
     try:
         from cxc_portal import respaldo_cifrado as rc

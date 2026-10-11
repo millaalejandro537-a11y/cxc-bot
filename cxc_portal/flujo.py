@@ -23,7 +23,6 @@ from cxc_bot.business_calendar import BusinessCalendar, load_business_calendar, 
 from .estado import ErrorNegocio
 
 ACTOR_SISTEMA = {"id": None, "usuario": "sistema", "rol": "admin", "nombre": "Proceso automático"}
-UMBRAL_AUMENTO_MORA = 5          # SUPUESTO (pendiente de confirmar): +5 dias de mora media entre salidas = alerta (la tolerancia A es 5)
 ENVIO_EXTERNO_HABILITADO = False  # candado: ningun notificador puede enviar fuera del sistema mientras esto sea False
 ORDEN_CLASE = {ps.A: 1, ps.B: 2, ps.C: 3, ps.CANDIDATO_SOLO_CONTADO: 4, ps.SOLO_CONTADO: 4}
 
@@ -141,7 +140,7 @@ class FlujoOperativo:
             filas.append({"id": s["id"], "ruta": s["route_id"], "ruta_nombre": r.nombre, "vendedor": r.vendedor, "fecha_salida": s["fecha_salida"],
                           "periodo": s["fecha_salida"][:7], "fecha_preparacion": self.fecha_preparacion(s["fecha_salida"]).isoformat(),
                           "estado": s["estado"], "preparacion": self.estado_preparacion(s, hoy), "excepciones": (s.get("reporte_excepciones") or {}).get("total_excepciones"),
-                          "revisada": bool(s.get("revisada_por"))})
+                          "revisada": bool(s.get("revisada_por")), "requiere_revision": bool((s.get("reporte_excepciones") or {}).get("requiere_revision"))})
         filas.sort(key=lambda x: (x["fecha_salida"], x["ruta"]))
         return {"hoy": hoy.isoformat(), "anticipacion_dias_habiles": self.anticipacion(), "salidas": filas,
                 "feriados": self.estado.listar_feriados(), "semana_laboral": "lunes a sábado"}
@@ -152,6 +151,7 @@ class FlujoOperativo:
         self.estado.cerrar_alertas(sid, ("PREPARACION_ATRASADA", "PREPARACION_FALLIDA"), "Resuelto: la salida ya fue preparada.")
         self.generar_alertas(sal)
         self.encolar_aviso_preparacion(sal)
+        self.solicitar_revision_si_hace_falta(sal)
         return sal
 
     def generar_alertas(self, sal: dict) -> int:
@@ -167,13 +167,14 @@ class FlujoOperativo:
             a(f"{x['codigo']}|{x['antes']}>{x['ahora']}", "CAMBIO_CATEGORIA", "alta" if empeora else "media",
               f"{x['folder']} {x['nombre']}: cambió de {x['antes']} a {x['ahora']}" + (" (empeora)" if empeora else ""), x["codigo"], x)
         previo = self.estado.resumen_salida_anterior(rid, sal["fecha_salida"])
+        umbral = self.estado.configuracion()["umbral_aumento_mora_dias"]   # aprobado: 5 dias o mas; configurable y auditado
         with self.estado.tx() as c:
             actual = {r["codigo"]: dict(r) for r in c.execute("SELECT * FROM salida_resumen WHERE salida_id = ?", (sid,))}
         for cod, y in actual.items():
             x = previo.get(cod)
-            if x and x["promedio_mora"] is not None and y["promedio_mora"] is not None and y["promedio_mora"] - x["promedio_mora"] >= UMBRAL_AUMENTO_MORA:
+            if x and x["promedio_mora"] is not None and y["promedio_mora"] is not None and y["promedio_mora"] - x["promedio_mora"] >= umbral:
                 a(f"{cod}", "AUMENTO_MORA", "media", f"{y['folder']}: la mora media subió de {x['promedio_mora']} a {y['promedio_mora']} días entre salidas", cod,
-                  {"antes": x["promedio_mora"], "ahora": y["promedio_mora"], "umbral_supuesto": UMBRAL_AUMENTO_MORA})
+                  {"antes": x["promedio_mora"], "ahora": y["promedio_mora"], "umbral_dias": umbral})
         for x in rep.get("sin_datos", []):
             a(x["codigo"], "SIN_EVIDENCIA", "media", f"{x['folder']} {x['nombre']}: sin evidencia suficiente para clasificar", x["codigo"], x)
         for x in rep.get("pendientes_gerencia", []):
@@ -213,6 +214,26 @@ class FlujoOperativo:
                 continue
             if u["rol"] in ("admin", "gerencia") or (u["rol"] == "vendedor" and ruta and (u.get("vendedor") or "").lower() == ruta.vendedor.lower()):
                 n += self.estado.encolar_notificacion(f"salida_preparada|{sal['id']}|{u['usuario']}", "SALIDA_PREPARADA", u["usuario"], u["rol"], asunto, cuerpo)
+        return n
+
+    def solicitar_revision_si_hace_falta(self, sal: dict) -> int:
+        """Gestion por excepcion: SOLO si hay excepciones que requieren una decision antes de publicar se pide revision de gerencia (aviso + notificacion
+        a gerencia). Sin ellas la salida queda lista y no se molesta a nadie."""
+        b = (sal["reporte_excepciones"] or {}).get("bloqueantes") or {}
+        if not (b.get("duras") or b.get("requieren_revision_gerencia")):
+            return 0
+        partes = []
+        if b.get("requieren_revision_gerencia"):
+            partes.append(f"{b['requieren_revision_gerencia']} cliente(s) pendiente(s) de decisión o sin evidencia suficiente")
+        if b.get("duras"):
+            partes.append(f"{b['duras']} cliente(s) propuesto(s) sin confirmar o rechazar")
+        titulo = f"Salida {sal['fecha_salida']} · {sal['route_id']}: requiere revisión de gerencia antes de publicar ({'; '.join(partes)})"
+        self.estado.registrar_alerta(f"REVISION_GERENCIA_REQUERIDA|{sal['id']}", "REVISION_GERENCIA_REQUERIDA", "alta", titulo, sal["route_id"], sal["id"], None, b)
+        n = 0
+        for u in self.estado.listar_usuarios():
+            if u["activo"] and u["rol"] == "gerencia":
+                n += self.estado.encolar_notificacion(f"revision_gerencia|{sal['id']}|{u['usuario']}", "REVISION_GERENCIA", u["usuario"], u["rol"], titulo,
+                                                      titulo + ". (Mensaje SIMULADO: no sale del sistema.)")
         return n
 
     def procesar_notificaciones(self) -> dict:
@@ -296,9 +317,12 @@ class FlujoOperativo:
             else:
                 creadas.append(self.estado.solicitar_impresion(actor, "HOJA_VISITA", sal["route_id"], sid, d["id"], f"Hoja de visita v{d['version']}", copias)["id"])
         e = self.estado.excel_actual(sal["route_id"])
-        if e and e["fecha_salida"] == sal["fecha_salida"]:
+        bor = self.estado.excel_borrador(sal["route_id"])
+        if bor and bor["fecha_salida"] == sal["fecha_salida"] and not (e and e["fecha_salida"] == sal["fecha_salida"]):
+            omitidas.append({"tipo": "EXCEL_RUTA", "motivo": "El Excel es un BORRADOR (no publicado): no se prepara su impresión."})
+        elif e and e["fecha_salida"] == sal["fecha_salida"]:
             if e["borrador"]:
-                omitidas.append({"tipo": "EXCEL_RUTA", "motivo": "El Excel es un BORRADOR (fuente no vigente): no se prepara su impresión."})
+                omitidas.append({"tipo": "EXCEL_RUTA", "motivo": "El Excel es un BORRADOR: no se prepara su impresión."})
             else:
                 previa = next((i for i in activas if i.get("excel_id") == e["id"]), None)
                 if previa:
@@ -310,20 +334,36 @@ class FlujoOperativo:
         return {"salida": sid, "creadas": creadas, "existentes": existentes, "omitidas": omitidas, "nota": "Solo registro: no hay impresoras conectadas."}
 
     # ------------------------------------------------------------------ Excel de ruta publicable
+    def evaluar_publicacion(self, sal: dict) -> dict:
+        """Regla aprobada (gestion por excepcion): el borrador siempre se prepara; se publica normalmente solo si (1) la fuente esta validada y vigente
+        (en vivo real, sin problemas de calidad) y (2) no hay excepciones que requieran una decision. Una revision de GERENCIA resuelve las que requieren
+        revision; los clientes propuestos sin confirmar solo se resuelven confirmandolos o rechazandolos."""
+        rep = sal.get("reporte_excepciones") or {}
+        b = rep.get("bloqueantes") or {}
+        fuente = self.servicio.fuente
+        motivos = []
+        if not bool(getattr(fuente, "apta_para_publicar", False)):
+            motivos.append("La fuente de datos no está validada para publicar (snapshot, simulada, desactualizada o con problemas de calidad): solo se genera BORRADOR.")
+        if b.get("duras"):
+            motivos.append(f"Hay {b['duras']} cliente(s) propuesto(s) sin confirmar o rechazar: el roster no está cerrado.")
+        revisada_por_gerencia = bool(sal.get("revisada_por")) and (sal.get("revisada_rol") or self.estado.rol_de_usuario(sal.get("revisada_por"))) == "gerencia"
+        pide = bool(b.get("requieren_revision_gerencia")) and not revisada_por_gerencia
+        if pide:
+            motivos.append(f"Hay {b['requieren_revision_gerencia']} excepción(es) que requieren decisión: falta la revisión de gerencia.")
+        return {"publicable": not motivos, "motivos": motivos, "requiere_revision_gerencia": pide, "revisada_por_gerencia": revisada_por_gerencia}
+
     def generar_excel_salida(self, actor: dict, sid: int, base: str) -> dict:
+        """Genera el Excel de la salida (preparandola antes si hace falta). Si las condiciones lo permiten se PUBLICA en Actual/; si no, queda como
+        BORRADOR en Borrador/ con sus motivos (nunca desplaza a la version publicada). Idempotente por contenido."""
         sal = self.estado.obtener_salida(sid)
         if not sal:
             raise ErrorNegocio("Salida no encontrada.", 404)
         if not sal.get("preparada_en"):
-            raise ErrorNegocio("Prepare la salida antes de generar el Excel: las excepciones se identifican antes de publicar.", 409)
-        if not sal.get("revisada_por"):
-            raise ErrorNegocio("Falta la revisión humana de las excepciones de la salida: revísela antes de publicar el Excel.", 409)
-        pend = self.estado.listar_candidatos(sal["route_id"], "propuesta")
-        if pend:
-            raise ErrorNegocio(f"Hay {len(pend)} cliente(s) propuesto(s) sin confirmar o rechazar: el roster del Excel no está cerrado.", 409)
+            sal = self.preparar(actor, sid)
+        ev = self.evaluar_publicacion(sal)
         datos, nombre, avisos = self.servicio.generar_excel(actor, sal["route_id"], base, sal["fecha_salida"])
         fuente = self.servicio.fuente
-        borrador = not bool(getattr(fuente, "apta_para_publicar", False))   # solo una fuente en vivo REAL, fresca y sin problemas de calidad publica
         ruta = self.estado.obtener_ruta(sal["route_id"])
-        return self.estado.registrar_excel(actor, sal["route_id"], sid, sal["fecha_salida"], nombre, datos, hashlib.sha256(datos).hexdigest(), huella_excel(datos), borrador,
-                                           getattr(fuente, "tipo", "SIN_FUENTE"), fuente.fecha_corte.isoformat() if fuente else "", len(ruta["clientes"]), avisos)
+        e = self.estado.registrar_excel(actor, sal["route_id"], sid, sal["fecha_salida"], nombre, datos, hashlib.sha256(datos).hexdigest(), huella_excel(datos), ev["publicable"],
+                                        getattr(fuente, "tipo", "SIN_FUENTE"), fuente.fecha_corte.isoformat() if fuente else "", len(ruta["clientes"]), avisos, ev["motivos"])
+        return {**e, "publicable": ev["publicable"], "motivos": ev["motivos"], "requiere_revision_gerencia": ev["requiere_revision_gerencia"]}

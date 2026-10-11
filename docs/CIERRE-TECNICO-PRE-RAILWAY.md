@@ -14,19 +14,19 @@ Ya existían y **no se reconstruyeron**: semáforo único (`cxc_bot/payment_sema
 | Clientes nuevos, zonas, prefijos, folders permanentes | **Ya existía y se verificó** | `confirmar_candidato`, `agregar_cliente`, marca de agua de folders |
 | Excel con la plantilla de Cosprobell (gris, bordes, 2 hojas, fórmulas, saldos, total, formato monetario) | **Terminado reutilizando el generador aprobado** (idéntico celda por celda a Las Vegas y Yoro en pruebas previas) | `excel_service` + `validate_workbook` en cada generación; nunca se publica si no pasa |
 | Carpetas Actual / Histórico, versiones inmutables | **Terminado en el Portal** | `excel_rutas` + `estado/rutas_excel/<ruta>/{Actual,Historico}`; exclusivo (`xb`), el histórico pasa a solo lectura, hash verificado, incluido en respaldos y migración |
-| Excepciones antes de publicar | **Terminado** | El Excel exige: salida preparada, **revisión humana** de las excepciones y 0 clientes propuestos sin confirmar; siempre BORRADOR mientras la fuente no sea real/vigente |
+| Excepciones antes de publicar (**gestión por excepción, aprobada 2026-10-11**) | **Terminado** | El borrador SIEMPRE se prepara (la salida y el Excel se preparan solos). Publicación normal solo si la fuente está validada/vigente **y** no hay excepciones que requieran decisión; si las hay se pide revisión **de gerencia** (aviso + notificación solo a gerencia). Ver §4 |
 | Repetición segura | **Terminado** | salida única por (ruta, fecha); alertas y notificaciones con clave única; Excel por huella de contenido; impresión sin duplicar |
 | Motor único de semaforo, plazos 30/60, reglas de elegibilidad | **Ya existía** (sin cambios) | `payment_semaphore` |
 | Decisiones, motivos, responsables, fechas, historial | **Ya existía** | `decisiones` |
 | Evaluaciones por salida persistidas y comparables | **Terminado** | `salida_resumen` + `GET /api/comparar-salidas` |
-| Alertas de cambio de categoría, mora y sin evidencia | **Terminado** (umbral de mora = SUPUESTO de +5 días, por confirmar) | `flujo.generar_alertas`; tipos en la tabla `alertas` |
+| Alertas de cambio de categoría, mora y sin evidencia | **Terminado** (mora: +5 días o más entre salidas, **aprobado y configurable**) | `flujo.generar_alertas`; parámetro `umbral_aumento_mora_dias` (`/api/configuracion`) |
 | Candidatos a solo contado nunca se convierten en decisión | **Terminado y probado** | alerta "pendiente de gerencia"; las pruebas verifican 0 decisiones automáticas |
 | Hojas de visita v1 (Occidente: 8 hojas) y vínculo por salida | **Ya existía** | `documentos`, `salida_documentos` |
 | Seguimiento de visitas, **cobros y ventas** | **Terminado** | columnas `cobro`/`venta` (montos declarados en campo, no de SAP); totales por salida |
 | Alerta por 3 salidas consecutivas con visita confirmada como no realizada | **Terminado** | aviso `OMISION_3_SALIDAS`; la falta de firma NO cuenta |
 | Preparación y registro de impresión + adaptador del agente | **Terminado** | `POST /api/salidas/{id}/impresion`, `agente_impresion.py` (`ImpresoraSimulada`; rechaza impresoras reales) |
 | Dashboard: cartera por vendedor/ruta/zona/cliente, saldos, vencimientos, mora, top 10, clasificaciones, alertas, excepciones, decisiones | **Terminado** | `dashboard.py` + `GET /api/dashboard`; cartera/antigüedad/vendedor/zona/prioritarios vienen de `cxc-reporting-core` (cortes NO VALIDADOS) |
-| Oportunidades (clientes A con compras esporádicas) | **Terminado con criterio SUPUESTO** (A con ≤ 2 facturas en 180 días) | `dashboard.oportunidades`; por confirmar con gerencia |
+| Oportunidades (clientes A con compras esporádicas) | **Terminado, regla aprobada, solo informativa** (A con ≤ 2 facturas en 180 días; parámetros configurables) | `dashboard.oportunidades`; no genera avisos, notificaciones ni decisiones |
 | Cumplimiento de rutas | **Terminado** | `dashboard.cumplimiento` |
 | Reportes automáticos y notificaciones preparadas | **Terminado en modo simulado** | resumen semanal y aviso de salida preparada a gerencia/admin y a cada vendedor (solo sus rutas); `ENVIO_EXTERNO_HABILITADO=False` |
 | Adaptador de solo lectura de fuente empresarial + contrato | **Terminado con transporte simulado** | `fuente_empresarial.py`, `docs/CONTRATO-DATOS-BLC.md`; simula datos incompletos, desactualizados, duplicados y fallas de conexión |
@@ -45,11 +45,17 @@ Ya existían y **no se reconstruyeron**: semáforo único (`cxc_bot/payment_sema
 9. **Cambios incrementales de la fuente empresarial**: el adaptador v1 hace carga completa; falta saber qué ofrecerá BLC.
 10. **Pruebas con datos privados** (`test_portal_datos_privados.py`, 12): NO se ejecutaron en este cierre por la restricción de no usar bases financieras reales.
 
-## 4. Supuestos que requieren confirmación de Alejandro
-- Umbral de “aumento importante de mora” entre salidas: +5 días de mora media.
-- Definición de oportunidad comercial: cliente A con ≤ 2 facturas en 180 días.
-- Frescura aceptable de la fuente (por defecto 2 días en el adaptador) y 3 días hábiles de anticipación (ya vigente).
-- Que la revisión humana de excepciones sea requisito para generar el Excel (implementado así).
+## 4. Reglas aprobadas por Alejandro (2026-10-11) y cómo quedaron
+1. **Mora:** aviso cuando la mora promedio sube **5 días o más** entre salidas; el umbral es configurable (`umbral_aumento_mora_dias`, 1–90; cada cambio queda auditado).
+2. **Oportunidad comercial:** cliente A con **2 o menos facturas en los últimos 180 días**; **solo informativa** (parámetros `oportunidad_ventana_dias` y `oportunidad_max_facturas`).
+3. **Gestión por excepción:**
+   - La salida y el borrador se preparan siempre, solos.
+   - **Publicación normal** (Excel en `Actual/`): fuente validada y vigente (`apta_para_publicar`) y sin excepciones que requieran decisión.
+   - Si no se cumple, el Excel queda como **BORRADOR** en `Borrador/` con sus motivos; **no desplaza** a la versión publicada; repetirlo no crea versiones; cuando ya puede publicarse, **el mismo borrador se promueve** a Actual.
+   - **Requieren revisión de gerencia** (únicamente estas): clientes candidatos a solo contado/revisión humana pendientes de decisión y clientes sin evidencia suficiente. La revisión debe ser de rol **gerencia** (la de un administrador no la sustituye). Se pide solo a gerencia (aviso `REVISION_GERENCIA_REQUERIDA` + notificación simulada).
+   - **Se resuelven decidiendo, no revisando:** clientes propuestos sin confirmar/rechazar (el roster no está cerrado).
+   - **Informativas (no bloquean ni piden revisión):** alertas de cobro en mora, cambios de categoría, clientes nuevos/retirados, omisiones, datos no vivos.
+Pendiente de definir con Alejandro: la frescura aceptable de la fuente real (el adaptador usa 2 días por defecto).
 
 ## 5. Qué decide/aporta BLC y qué hay que hacer para empezar con datos reales
 Ver `docs/CONTRATO-DATOS-BLC.md` (datos exactos) y la lista mínima de acciones al final de `docs/NUBE-ALOJAMIENTO.md` / `docs/AUDITORIA-DESPLIEGUE.md`.

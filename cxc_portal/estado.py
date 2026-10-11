@@ -695,7 +695,7 @@ class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
         return problemas + self.verificar_excel()
 
     TABLAS_EXPORT = ("meta", "vendedores", "usuarios", "rutas", "zonas", "clientes_ruta", "decisiones", "salidas", "salida_resumen", "hojas_visita", "visitas",
-                     "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion", "feriados", "alertas", "notificaciones", "excel_rutas")
+                     "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion", "feriados", "alertas", "notificaciones", "excel_rutas", "configuracion")
 
     @property
     def carpeta_documentos(self) -> Path:

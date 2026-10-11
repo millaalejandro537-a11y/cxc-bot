@@ -18,7 +18,7 @@ function Excepciones({ r }) {
   ]
   return (
     <>
-      <p className={r.requiere_revision ? 'aviso' : 'okmsg'}>{r.total_excepciones} excepción(es) a revisar · datos del corte {fdate(r.fecha_corte_datos)}</p>
+      <p className={r.requiere_revision ? 'aviso' : 'okmsg'}>{r.total_excepciones} excepción(es) informativa(s) o a decidir · {r.requiere_revision ? `${r.bloqueantes?.requieren_revision_gerencia || 0} requieren revisión de gerencia y ${r.bloqueantes?.duras || 0} cliente(s) propuesto(s) sin confirmar antes de publicar` : 'ninguna requiere decisión antes de publicar'} · datos del corte {fdate(r.fecha_corte_datos)}</p>
       {(r.advertencias || []).map((a) => <p key={a} className="muted small">⚠ {a}</p>)}
       {bloques.filter(([k]) => (r[k] || []).length > 0).map(([k, t, fmt]) => (
         <details key={k} open><summary><b>{t}</b> ({r[k].length})</summary><ul className="notas">{r[k].map((x, i) => <li key={i}>{fmt(x)}</li>)}</ul></details>
@@ -64,7 +64,7 @@ export function Salidas({ rutas, user, abrirDocumentos }) {
         <tbody>{lista.map((s) => (
           <tr key={s.id} className="click" onClick={() => setSel(s.id)}>
             <td><b>{fdate(s.fecha_salida)}</b>{s.fecha_regreso ? ` → ${fdate(s.fecha_regreso)}` : ''}</td><td>{EST[s.estado]}</td>
-            <td className="small">{s.revisada_por ? `✓ ${s.revisada_por}` : s.reporte_excepciones ? 'pendiente de revisar' : '—'}</td>
+            <td className="small">{s.revisada_por ? `✓ ${s.revisada_por}` : s.reporte_excepciones?.requiere_revision ? 'requiere revisión de gerencia' : s.reporte_excepciones ? 'sin excepciones que decidir' : '—'}</td>
             <td className="small">{ruta?.requiere_hojas_visita ? 'documento vinculado' : 'no aplica'}</td>
           </tr>))}</tbody>
       </table></div>
@@ -85,8 +85,8 @@ export function Salidas({ rutas, user, abrirDocumentos }) {
             </div>
           )}
           {det.salida.reporte_excepciones && <Excepciones r={det.salida.reporte_excepciones} />}
-          {gestiona && det.salida.reporte_excepciones && !det.salida.revisada_por && (
-            <div className="form"><textarea rows={2} placeholder="Nota de revisión de las excepciones" value={nota} onChange={(e) => setNota(e.target.value)} />
+          {gestiona && det.salida.reporte_excepciones?.requiere_revision && !det.salida.revisada_por && (
+            <div className="form"><textarea rows={2} placeholder="Nota de revisión de gerencia (solo gerencia habilita la publicación)" value={nota} onChange={(e) => setNota(e.target.value)} />
               <button onClick={() => accion(() => post(`/salidas/${sel}/revisar`, { nota }), 'Revisión registrada.')}>Registrar revisión</button></div>
           )}
           {det.salida.revisada_por && <p className="okmsg small">Revisada por {det.salida.revisada_por}: {det.salida.revision_nota}</p>}

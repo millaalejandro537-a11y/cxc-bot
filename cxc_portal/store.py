@@ -348,7 +348,13 @@ class PortalServicio:
         total = sum(len(v) for k, v in ex.items() if isinstance(v, list) and k != "advertencias")
         if ex["omisiones"]:
             total += len(ex["omisiones"]["omitidas_confirmadas"]) + len(ex["omisiones"]["sin_registro_en_salidas"])
-        reporte = {**ex, "total_excepciones": total, "requiere_revision": total > 0, "fecha_corte_datos": ruta.fuente.get("fecha_corte")}
+        # Gestion por excepcion: el borrador SIEMPRE se prepara. Solo exigen una persona antes de publicar:
+        #  - duras: clientes propuestos sin confirmar/rechazar (el roster no esta cerrado; se resuelven, no se "revisan");
+        #  - requieren revision de gerencia: candidatos pendientes de decision y clientes sin evidencia suficiente.
+        # Todo lo demas (cobros en mora, cambios de categoria, clientes nuevos/retirados, omisiones, datos no vivos) es informativo.
+        duras, revision = len(ex["candidatos_pendientes"]), len(ex["pendientes_gerencia"]) + len(ex["sin_datos"])
+        reporte = {**ex, "total_excepciones": total, "bloqueantes": {"duras": duras, "requieren_revision_gerencia": revision},
+                   "requiere_revision": bool(duras or revision), "fecha_corte_datos": ruta.fuente.get("fecha_corte")}
         return self.estado.guardar_preparacion(actor, sid, resumen, reporte)
 
     # ------------------------------------------------------------------ documentos reutilizables (hojas de visita)
