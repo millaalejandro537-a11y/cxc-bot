@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { api, post } from './api.js'
+import { ConfirmarClientes } from './Confirmar.jsx'
 
 // Administración (rol admin): usuarios, vendedores, rutas/zonas/clientes y orden de folders. Todo se valida y audita en la API.
 function Usuarios({ vendedores }) {
@@ -12,13 +13,15 @@ function Usuarios({ vendedores }) {
     e.preventDefault(); setMsg(null)
     try { await post('/admin/usuarios', f); setF({ ...f, usuario: '', nombre: '', password: '' }); cargar(); setMsg('Usuario creado: deberá cambiar su contraseña en el primer acceso.') } catch (err) { setMsg(err.message) }
   }
+  const restablecer2fa = async (u) => { if (window.confirm(`¿Restablecer el segundo factor de ${u.usuario}? Deberá activarlo de nuevo.`)) { try { await post(`/admin/usuarios/${u.id}/2fa/restablecer`); cargar() } catch (err) { setMsg(err.message) } } }
   const alternar = async (u) => { try { await api(`/admin/usuarios/${u.id}`, { method: 'PATCH', body: { activo: !u.activo } }); cargar() } catch (err) { setMsg(err.message) } }
   return (
     <>
       <h3>Usuarios</h3>
       <div className="tablewrap"><table>
-        <thead><tr><th>Usuario</th><th>Rol</th><th>Vendedor</th><th>Último acceso</th><th>Estado</th></tr></thead>
+        <thead><tr><th>Usuario</th><th>Rol</th><th>Vendedor</th><th>Último acceso</th><th>2FA</th><th>Estado</th></tr></thead>
         <tbody>{us.map((u) => <tr key={u.id}><td>{u.usuario}<br /><small className="muted">{u.nombre}</small></td><td>{u.rol}</td><td>{u.vendedor || '—'}</td><td>{u.ultimo_acceso || '—'}</td>
+          <td>{u.totp_activo ? <button className="sec" onClick={() => restablecer2fa(u)}>Restablecer</button> : <span className="muted">no</span>}</td>
           <td><button className="sec" onClick={() => alternar(u)}>{u.activo ? 'Desactivar' : 'Activar'}</button></td></tr>)}</tbody>
       </table></div>
       <form onSubmit={crear} className="form">
@@ -115,10 +118,12 @@ export function Admin() {
       <h2>Administración</h2>
       <div className="filtros">
         <button className={tab === 'rutas' ? '' : 'sec'} onClick={() => setTab('rutas')}>Rutas y clientes</button>
+        <button className={tab === 'confirmar' ? '' : 'sec'} onClick={() => setTab('confirmar')}>Clientes por confirmar</button>
         <button className={tab === 'usuarios' ? '' : 'sec'} onClick={() => setTab('usuarios')}>Usuarios</button>
         <button className={tab === 'vendedores' ? '' : 'sec'} onClick={() => setTab('vendedores')}>Vendedores</button>
       </div>
       {tab === 'rutas' && <Rutas vendedores={vend} recargarVendedores={cargarVend} />}
+      {tab === 'confirmar' && <ConfirmarClientes user={{ rol: 'admin' }} />}
       {tab === 'usuarios' && <Usuarios vendedores={vend} />}
       {tab === 'vendedores' && (
         <>

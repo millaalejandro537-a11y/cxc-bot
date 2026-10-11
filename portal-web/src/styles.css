@@ -74,3 +74,22 @@ button.sec { background: var(--panel); color: var(--text); border: 1px solid var
 td.reg { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 details.card { margin: 10px 0; }
 details summary { cursor: pointer; }
+
+.clave { display: inline-block; font-size: 18px; letter-spacing: 2px; padding: 8px 12px; background: var(--panel); border: 1px dashed var(--line); border-radius: 8px; word-break: break-all; }
+.rec { background: var(--bg); padding: 10px; border-radius: 8px; font-size: 16px; line-height: 1.7; }
+.check { flex-direction: row !important; align-items: center; gap: 8px; }
+.btn.sec { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+.print-root .hoja { background: #fff; color: #000; padding: 14px; margin: 12px 0; border: 1px solid var(--line); }
+.print-root .hoja table th, .print-root .hoja table td { border: 1px solid #444; padding: 6px 6px; font-size: 12px; color: #000; }
+.print-root .hoja h4 { margin: 0; text-align: center; } .print-root .sub { text-align: center; font-weight: 700; margin: 4px 0; }
+.print-root .campos { font-size: 12px; } .print-root .pie { margin-top: 10px; }
+.print-root .barra { margin-bottom: 8px; }
+@media print {
+  @page { size: letter landscape; margin: 10mm; }
+  body { background: #fff !important; }
+  .app > header, .app > footer, .no-print { display: none !important; }
+  .print-root .hoja { border: 0; margin: 0; padding: 0; page-break-after: always; break-after: page; }
+  .print-root .hoja:last-child { page-break-after: auto; break-after: auto; }
+  .print-root .hoja table th, .print-root .hoja table td { padding: 5px 5px; font-size: 11px; }
+  .tablewrap { overflow: visible; border: 0; }
+}

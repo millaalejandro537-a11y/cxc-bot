@@ -1,0 +1,12 @@
+# BORRADOR (no desplegado). Proyecto de Railway INDEPENDIENTE, bajo control de Cosprobell, separado de los servicios de BLC.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+# Un solo replica: SQLite en volumen no admite varias instancias escribiendo (ver docs/NUBE-ALOJAMIENTO.md para el paso a PostgreSQL).
+numReplicas = 1

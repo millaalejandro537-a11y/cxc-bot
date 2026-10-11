@@ -5,6 +5,10 @@ import { CLASES, Dot, ESTADO, FuenteBadge, Semaforo, fdate, money } from './ui.j
 import { Admin, Auditoria } from './Admin.jsx'
 import { Reportes } from './Reportes.jsx'
 import { Visitas } from './Visitas.jsx'
+import { Seguridad } from './Seguridad.jsx'
+import { Documentos } from './Documentos.jsx'
+import { Salidas } from './Salidas.jsx'
+import { Impresion } from './Impresion.jsx'
 import { DecisionPanel } from './Decision.jsx'
 
 function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente, capacidades }) {
@@ -285,11 +289,20 @@ function Alertas({ rutas, abrirCliente }) {
 function Login({ onLogin }) {
   const [u, setU] = useState('')
   const [p, setP] = useState('')
+  const [reto, setReto] = useState(null)
+  const [codigo, setCodigo] = useState('')
   const [err, setErr] = useState(null)
   const [ocupado, setOcupado] = useState(false)
+  const entrar = (d) => { setCsrf(d.csrf); setP(''); setCodigo(''); onLogin(d.usuario, d.debe_configurar_2fa) }
   const enviar = async (e) => {
     e.preventDefault(); setErr(null); setOcupado(true)
-    try { const d = await post('/auth/login', { usuario: u, password: p }); setCsrf(d.csrf); setP(''); onLogin(d.usuario) } catch (x) { setErr(x.message) }
+    try {
+      if (reto) entrar(await post('/auth/login/2fa', { reto, codigo }))
+      else {
+        const d = await post('/auth/login', { usuario: u, password: p })
+        if (d.requiere_2fa) { setReto(d.reto); setP('') } else entrar(d)
+      }
+    } catch (x) { setErr(x.message); if (reto && /expir|intentos/i.test(x.message)) setReto(null) }
     setOcupado(false)
   }
   return (
@@ -297,9 +310,17 @@ function Login({ onLogin }) {
       <h1>Portal CxC</h1>
       <p className="muted">Distribuciones Cosprobell · Cuentas por cobrar</p>
       <form onSubmit={enviar} className="form">
-        <label>Usuario<input value={u} onChange={(e) => setU(e.target.value)} autoComplete="username" autoFocus required /></label>
-        <label>Contraseña<input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" required /></label>
-        <button type="submit" disabled={ocupado}>Entrar</button>
+        {!reto ? (
+          <>
+            <label>Usuario<input value={u} onChange={(e) => setU(e.target.value)} autoComplete="username" autoFocus required /></label>
+            <label>Contraseña<input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" required /></label>
+          </>
+        ) : (
+          <label>Código de verificación<input value={codigo} onChange={(e) => setCodigo(e.target.value)} autoComplete="one-time-code" autoFocus required placeholder="6 dígitos o código de recuperación" />
+            <small className="muted">Abra su app de autenticación. Si perdió el dispositivo, use un código de recuperación (sirve una vez).</small></label>
+        )}
+        <button type="submit" disabled={ocupado}>{reto ? 'Verificar' : 'Entrar'}</button>
+        {reto && <button type="button" className="sec" onClick={() => { setReto(null); setCodigo('') }}>Volver</button>}
         {err && <p className="error">{err}</p>}
       </form>
       <p className="muted small">Acceso solo para personal autorizado. La actividad queda registrada.</p>
@@ -339,20 +360,21 @@ export default function App() {
   const [fuente, setFuente] = useState(null)
   const [prior, setPrior] = useState([])
   const [err, setErr] = useState(null)
+  const [req2fa, setReq2fa] = useState(false)
 
   useEffect(() => {
-    api('/auth/me').then((d) => { setCsrf(d.csrf); setUser(d.usuario) }).catch(() => setUser(null))
+    api('/auth/me').then((d) => { setCsrf(d.csrf); setUser(d.usuario); setReq2fa(!!d.debe_configurar_2fa) }).catch(() => setUser(null))
     const f = () => { setUser(null); setCsrf(null) }
     window.addEventListener('cxc-sesion-expirada', f)
     return () => window.removeEventListener('cxc-sesion-expirada', f)
   }, [])
 
   useEffect(() => {
-    if (!user || user.debe_cambiar_password) return
+    if (!user || user.debe_cambiar_password || req2fa) return
     api('/rutas').then((d) => setRutas(d.rutas)).catch((e) => setErr(e.message))
     api('/fuente').then(setFuente).catch(() => {})
     if (['admin', 'gerencia'].includes(user.rol)) api('/prioridades?n=10').then((d) => setPrior(d.prioridades)).catch(() => {})
-  }, [user])
+  }, [user, req2fa])
 
   const ir = (v) => { setAtras((a) => [...a, vista]); setVista(v) }
   const volver = () => { setVista(atras.at(-1) || { t: 'panel' }); setAtras((a) => a.slice(0, -1)) }
@@ -360,10 +382,12 @@ export default function App() {
   const raiz = (t) => { setAtras([]); setVista({ t }) }
 
   if (user === undefined) return <p className="login">Cargando…</p>
-  if (user === null) return <Login onLogin={setUser} />
+  if (user === null) return <Login onLogin={(u, r) => { setUser(u); setReq2fa(!!r) }} />
   if (user.debe_cambiar_password) return <CambiarClave user={user} onListo={() => setUser(null)} />
+  if (req2fa) return <Seguridad user={user} obligatorio onCambio={() => api('/auth/me').then((d) => { setUser(d.usuario); setReq2fa(!!d.debe_configurar_2fa) })} />
 
   const glob = ['admin', 'gerencia'].includes(user.rol)
+  const conHojas = rutas.filter((r) => r.requiere_hojas_visita)
   const enVivo = fuente?.fuente || { frescura: { motivo: '' } }
   return (
     <div className="app">
@@ -372,10 +396,14 @@ export default function App() {
         <nav>
           <button className={vista.t === 'panel' ? 'on' : ''} onClick={() => raiz('panel')}>Panel</button>
           <button className={vista.t === 'alertas' ? 'on' : ''} onClick={() => raiz('alertas')}>Alertas</button>
-          <button className={vista.t === 'visitas' ? 'on' : ''} onClick={() => raiz('visitas')}>Visitas</button>
+          <button className={vista.t === 'salidas' ? 'on' : ''} onClick={() => raiz('salidas')}>Salidas</button>
+          {conHojas.length > 0 && <button className={vista.t === 'visitas' ? 'on' : ''} onClick={() => raiz('visitas')}>Visitas</button>}
+          {conHojas.length > 0 && <button className={vista.t === 'documentos' ? 'on' : ''} onClick={() => raiz('documentos')}>Hojas de visita</button>}
+          <button className={vista.t === 'impresion' ? 'on' : ''} onClick={() => raiz('impresion')}>Impresión</button>
           {glob && <button className={vista.t === 'reportes' ? 'on' : ''} onClick={() => raiz('reportes')}>Reportes</button>}
           {user.rol === 'admin' && <button className={vista.t === 'admin' ? 'on' : ''} onClick={() => raiz('admin')}>Administración</button>}
           {glob && <button className={vista.t === 'auditoria' ? 'on' : ''} onClick={() => raiz('auditoria')}>Auditoría</button>}
+          <button className={vista.t === 'seguridad' ? 'on' : ''} onClick={() => raiz('seguridad')}>Seguridad</button>
         </nav>
         <div className="rol"><span className="badge maqueta" title={user.usuario}>{ROL_TXT[user.rol]}{user.vendedor ? ` · ${user.vendedor}` : ''}</span><button className="sec" onClick={salir}>Salir</button></div>
       </header>
@@ -385,7 +413,11 @@ export default function App() {
         {vista.t === 'ruta' && <Ruta id={vista.id} abrirCliente={(c) => ir({ t: 'cliente', c })} volver={volver} user={user} />}
         {vista.t === 'cliente' && <Cliente codigo={vista.c} volver={volver} user={user} />}
         {vista.t === 'alertas' && <Alertas rutas={rutas} abrirCliente={(c) => ir({ t: 'cliente', c })} />}
-        {vista.t === 'visitas' && (rutas.length ? <Visitas rutas={rutas} /> : <p className="muted">No hay rutas asignadas.</p>)}
+        {vista.t === 'visitas' && (conHojas.length ? <Visitas rutas={conHojas} /> : <p className="muted">Ninguna de sus rutas usa hojas de visita.</p>)}
+        {vista.t === 'documentos' && <Documentos rutas={rutas} user={user} />}
+        {vista.t === 'salidas' && <Salidas rutas={rutas} user={user} abrirDocumentos={() => raiz('documentos')} />}
+        {vista.t === 'impresion' && <Impresion user={user} />}
+        {vista.t === 'seguridad' && <Seguridad user={user} onCambio={() => api('/auth/me').then((d) => setUser(d.usuario))} />}
         {vista.t === 'reportes' && glob && <Reportes />}
         {vista.t === 'admin' && user.rol === 'admin' && <Admin />}
         {vista.t === 'auditoria' && glob && <Auditoria />}

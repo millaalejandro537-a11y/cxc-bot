@@ -60,3 +60,11 @@ Detalle en `docs/PORTAL-MVP.md`, `docs/DESPLIEGUE-SEGURO.md`, `docs/INTEGRACION-
 - **Fuente de datos:** interfaz `FuenteDatos` (snapshot hoy). `validar_fuente` = prueba de aceptación de solo lectura para el ingeniero.
 - **Datos privados** (fuera de Git): `C:\Users\LTP\Documents\CxC-Datos-Privados\{2026-10-08, estado}`. Credenciales iniciales generadas en `estado\credenciales_iniciales.txt` (borrar tras el primer acceso).
 - **Bloqueos reales:** decisión de acceso (Tailscale/Cloudflare/nube) y su costo/instalación; credencial SELECT + contrato Gelsyn + prueba contable; cuentas reales; 2.º factor; respaldo/restauración.
+
+## Actualización 2026-10-11 (sin push, sin deploy)
+- **Estabilizado:** los 5 fallos de `test_portal_robustez` eran del ayudante de pruebas (no guardaba la cookie del login en dos pasos); la autenticación no se tocó. Suite: 427 passed, 1 skipped.
+- **Hojas de visita (Occidente):** documento aprobado de 8 hojas / 116 clientes registrado como v1 (sha256 en la BD), almacenado en privado, vinculado a salidas, con versiones inmutables y nueva versión solo con confirmación + motivo. Clientes cargados como candidatos SIN confirmar; colores preliminares (CANDIDATO ≠ decisión de gerencia). Ver `docs/HOJAS-DE-VISITA-E-IMPRESION.md`.
+- **Operación por salida:** salidas, preparación con excepciones, seguimiento y omisiones consecutivas, candidatos con confirmación humana, folders permanentes, cola de impresión + agente (solo diseño/registro; no imprime).
+- **Seguridad:** 2FA TOTP, token de perímetro, health con BD, respaldo/restauración/exportación probados.
+- **Frontend:** 2FA, salidas, hojas de visita (vista de impresión), visitas, clientes por confirmar, cola de impresión.
+- **Nube:** `docs/NUBE-ALOJAMIENTO.md` (propuesta Railway + costos), `Dockerfile`/`railway.toml` borradores NO construidos.

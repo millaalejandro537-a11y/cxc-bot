@@ -1,0 +1,14 @@
+.git
+**/node_modules
+portal-web/dist
+data
+output
+logs
+samples
+tests
+n8n
+demo_output
+*.sqlite3
+*.xlsx
+.env
+CLAUDE.md
