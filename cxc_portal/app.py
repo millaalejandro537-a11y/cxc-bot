@@ -33,6 +33,7 @@ from .store import PortalServicio, Ruta
 
 COOKIE = "cxc_session"
 MAX_BODY = 512 * 1024
+SOCKET_TIMEOUT_SEG = 30
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
@@ -55,7 +56,7 @@ REGLAS = {
 class Contexto:
     def __init__(self, servicio: PortalServicio, estado: Estado, https: bool = False, hosts_permitidos: Optional[List[str]] = None,
                  confiar_proxy: bool = False, limitador: Optional[sec.LimitadorIntentos] = None, roles_2fa: Tuple[str, ...] = (),
-                 perimetro_token: Optional[str] = None, reloj_totp: Callable[[], float] = time.time):
+                 perimetro_token: Optional[str] = None, reloj_totp: Callable[[], float] = time.time, proxy_saltos: int = 1):
         self.servicio, self.estado, self.https = servicio, estado, https
         self.roles_2fa = tuple(roles_2fa)                  # roles que DEBEN tener segundo factor activo
         self.perimetro_token = perimetro_token or None     # si se define, toda peticion debe traer X-Perimeter-Token (acceso solo via el perimetro)
@@ -63,6 +64,7 @@ class Contexto:
         self.retos: Dict[str, dict] = {}                   # login en dos pasos: reto -> {usuario_id, expira, intentos}
         self.hosts = {h.lower() for h in (hosts_permitidos or [])} | set(LOOPBACK)
         self.confiar_proxy = confiar_proxy
+        self.proxy_saltos = max(1, int(proxy_saltos))      # proxies de confianza delante de la app (X-Forwarded-For: se toma la entrada que ellos agregaron)
         self.limitador = limitador or sec.LimitadorIntentos()
 
 
@@ -759,6 +761,7 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
         server_version = "cxc-portal"
         sys_version = ""
         protocol_version = "HTTP/1.0"  # una peticion por conexion: sin cuerpos sin leer ni conexiones colgadas
+        timeout = SOCKET_TIMEOUT_SEG   # conexiones lentas/colgadas (slowloris) liberan su hilo
 
         def log_message(self, fmt, *args):
             pass
@@ -766,9 +769,10 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
         # -- utilidades
         def _ip(self) -> str:
             if ctx.confiar_proxy:
-                xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-                if xff:
-                    return xff[:64]
+                # El cliente controla las PRIMERAS entradas de X-Forwarded-For; solo es confiable la que agregaron NUESTROS proxies (las ultimas).
+                partes = [x.strip() for x in (self.headers.get("X-Forwarded-For") or "").split(",") if x.strip()]
+                if len(partes) >= ctx.proxy_saltos:
+                    return partes[-ctx.proxy_saltos][:64]
             return self.client_address[0]
 
         def _host_ok(self) -> bool:
@@ -829,7 +833,8 @@ def make_handler(ctx: Contexto, web_dir: Optional[Path]):
 
         # -- despacho
         def _manejar(self):
-            if not self._host_ok():
+            es_salud = self.command in ("GET", "HEAD") and urlparse(self.path).path == "/api/health"   # los monitores de la plataforma usan su propio Host; solo responde ok/db
+            if not es_salud and not self._host_ok():
                 return self._enviar(Respuesta(403, {"error": "Host no permitido."}))
             if ctx.perimetro_token and urlparse(self.path).path != "/api/health":
                 dado = self.headers.get("X-Perimeter-Token") or ""

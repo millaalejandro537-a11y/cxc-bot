@@ -1,5 +1,7 @@
 # Alojamiento permanente en la nube — evaluación y propuesta (2026-10-11)
 
+> **Actualización 2026-10-11:** ver `docs/AUDITORIA-DESPLIEGUE.md` (auditoría técnica, correcciones al Dockerfile/entrypoint y comparación de alojamiento verificada contra precios oficiales de Railway y Tailscale).
+
 Estado: **propuesta para revisión. No se desplegó nada, no se compró nada, no se tocó DNS ni se creó ningún recurso.** `Dockerfile`, `.dockerignore` y `railway.toml` son borradores **no construidos** (Docker Desktop está apagado y su arranque requiere aprobación).
 
 ## 1. Qué corre en Linux y qué depende de Windows (auditoría del código real)

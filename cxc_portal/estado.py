@@ -11,6 +11,8 @@ Nada financiero de SAP se guarda aqui: las facturas/recibos se leen de la fuente
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import sqlite3
@@ -596,6 +598,7 @@ class Estado(OperacionesMixin, DocumentosMixin):
         if ok != "ok":
             destino.unlink(missing_ok=True)
             raise ErrorNegocio(f"El respaldo no pasó la comprobación de integridad: {ok}", 500)
+        self._respaldar_documentos(destino_dir / "documentos")
         h = hashlib.sha256(destino.read_bytes()).hexdigest()
         (destino_dir / (nombre + ".sha256")).write_text(f"{h}  {nombre}\n", encoding="utf-8")
         antiguos = sorted(destino_dir.glob("portal-*.sqlite3"))
@@ -603,6 +606,19 @@ class Estado(OperacionesMixin, DocumentosMixin):
             viejo.unlink(missing_ok=True)
             (destino_dir / (viejo.name + ".sha256")).unlink(missing_ok=True)
         return destino
+
+    def _respaldar_documentos(self, destino: Path) -> int:
+        """Copia espejo (solo agrega) de los .xlsx de documentos: la BD sola no permite descargar versiones anteriores tras una restauracion."""
+        import shutil
+        origen, n = self.carpeta_documentos, 0
+        if origen.is_dir():
+            for f in origen.rglob("*"):
+                rel = f.relative_to(origen)
+                if f.is_file() and not (destino / rel).exists():
+                    (destino / rel).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, destino / rel)
+                    n += 1
+        return n
 
     @staticmethod
     def restaurar(archivo: Path, destino: Path, forzar: bool = False) -> Path:
@@ -633,13 +649,22 @@ class Estado(OperacionesMixin, DocumentosMixin):
         return destino
 
     TABLAS_EXPORT = ("meta", "vendedores", "usuarios", "rutas", "zonas", "clientes_ruta", "decisiones", "salidas", "salida_resumen", "hojas_visita", "visitas",
-                     "visita_eventos", "folder_hwm", "candidatos", "auditoria")
+                     "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion")
+
+    @property
+    def carpeta_documentos(self) -> Path:
+        return self.ruta.parent / "documentos"
 
     def exportar_json(self) -> dict:
         """Volcado LOGICO portable de todas las tablas (para migrar a PostgreSQL u otro motor). Contiene hashes de contraseña y semillas 2FA: tratarlo como secreto."""
         with self.tx() as c:
-            return {"formato": "cxc-portal-export/1", "schema_version": SCHEMA_VERSION, "exportado": self._t(),
-                    "tablas": {t: [dict(r) for r in c.execute(f"SELECT * FROM {t}")] for t in self.TABLAS_EXPORT}}
+            tablas = {t: [dict(r) for r in c.execute(f"SELECT * FROM {t}")] for t in self.TABLAS_EXPORT}
+        archivos = {}   # los .xlsx de los documentos viven en disco, no en la BD: viajan en el volcado (base64) para no perder las versiones
+        for d in tablas["documentos"]:
+            f = self.carpeta_documentos / d["almacenado"]
+            if f.is_file():
+                archivos[d["almacenado"]] = base64.b64encode(f.read_bytes()).decode("ascii")
+        return {"formato": "cxc-portal-export/1", "schema_version": SCHEMA_VERSION, "exportado": self._t(), "tablas": tablas, "archivos_documentos": archivos}
 
     def importar_json(self, datos: dict) -> Dict[str, int]:
         """Carga un volcado en una BD VACIA (no mezcla ni sobrescribe)."""
@@ -650,6 +675,12 @@ class Estado(OperacionesMixin, DocumentosMixin):
                 raise ErrorNegocio("La BD destino no está vacía: la importación no mezcla datos.", 409)
             c.execute("PRAGMA foreign_keys = OFF")
             cuenta = {}
+            docs = {d["almacenado"]: d["sha256"] for d in datos["tablas"].get("documentos", [])}
+            for rel, b64 in (datos.get("archivos_documentos") or {}).items():
+                contenido = base64.b64decode(b64)
+                destino = (self.carpeta_documentos / rel).resolve()
+                if self.carpeta_documentos.resolve() not in destino.parents or rel not in docs or hashlib.sha256(contenido).hexdigest() != docs[rel]:
+                    raise ErrorNegocio(f"Documento '{rel}' del volcado no coincide con su registro (ruta o hash).", 400)
             for t in self.TABLAS_EXPORT:
                 filas = datos["tablas"].get(t, [])
                 if t == "meta":
@@ -659,4 +690,10 @@ class Estado(OperacionesMixin, DocumentosMixin):
                     c.execute(f"INSERT INTO {t} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [f[k] for k in cols])
                 cuenta[t] = len(filas)
             self.auditar(c, {"usuario": "importacion", "rol": "admin"}, "bd.importar", "bd", "", cuenta)
+            for rel, b64 in (datos.get("archivos_documentos") or {}).items():   # tras validar todo; escritura exclusiva (nunca sobrescribe)
+                destino = self.carpeta_documentos / rel
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                if not destino.exists():
+                    destino.write_bytes(base64.b64decode(b64))
+            cuenta["archivos_documentos"] = len(datos.get("archivos_documentos") or {})
         return cuenta

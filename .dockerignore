@@ -12,3 +12,11 @@ demo_output
 *.xlsx
 .env
 CLAUDE.md
+**/__pycache__
+**/.env
+**/.env.*
+**/credenciales*
+**/*.sqlite3-wal
+**/*.sqlite3-shm
+.pytest_cache
+portal-web/dist

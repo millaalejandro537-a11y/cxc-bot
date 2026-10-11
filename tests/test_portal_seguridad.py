@@ -144,8 +144,9 @@ def test_host_ajeno_rechazado_dns_rebinding(env):
     s, _, _ = env
     c = Cliente(s.puerto)
     for h in ("evil.example.com", "evil.example.com:8780", "10.0.0.5:8780"):
-        assert c.pedir("GET", "/api/health", host=h)[0] == 403
-    assert c.pedir("GET", "/api/health", host=f"localhost:{s.puerto}")[0] == 200
+        assert c.pedir("GET", "/api/rutas", host=h)[0] == 403
+        assert c.pedir("GET", "/api/health", host=h)[0] == 200      # solo la sonda de salud (ok/db) se atiende con cualquier Host: monitores de la plataforma
+    assert c.pedir("GET", "/api/rutas", host=f"localhost:{s.puerto}")[0] == 401
 
 
 def test_cabeceras_de_seguridad_y_sin_cache(env):
@@ -265,6 +266,6 @@ def test_detras_de_proxy_https_usa_ip_reenviada_y_cookie_secure(tmp_path):
                              cabeceras={"X-Forwarded-For": "203.0.113.9", "Origin": "https://portal.ejemplo.com"}, host="portal.ejemplo.com")
         assert st == 200 and "Secure" in cab["set-cookie"] and "strict-transport-security" in cab
         assert any(e["ip"] == "203.0.113.9" for e in ctx.estado.listar_auditoria())
-        assert Cliente(s.puerto).pedir("GET", "/api/health", host="otro.dominio.com")[0] == 403
+        assert Cliente(s.puerto).pedir("GET", "/api/rutas", host="otro.dominio.com")[0] == 403
     finally:
         s.cerrar()

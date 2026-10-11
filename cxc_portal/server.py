@@ -28,7 +28,7 @@ DEFAULT_WEB = Path(__file__).resolve().parent.parent / "portal-web" / "dist"
 
 def construir(data_dir: Optional[Path], estado_dir: Optional[Path], *, demo: bool = False, https: bool = False,
               hosts: Optional[List[str]] = None, confiar_proxy: bool = False, reporting_src: Optional[str] = None, reloj=None,
-              roles_2fa: tuple = (), perimetro_token: Optional[str] = None):
+              roles_2fa: tuple = (), perimetro_token: Optional[str] = None, proxy_saltos: int = 1):
     data_dir = Path(data_dir) if data_dir else (Path(os.environ[ENV_DATOS]) if os.environ.get(ENV_DATOS) else None)
     if estado_dir is None:
         estado_dir = Path(os.environ[ENV_ESTADO]) if os.environ.get(ENV_ESTADO) else ((data_dir.parent / "estado") if data_dir else None)
@@ -53,7 +53,7 @@ def construir(data_dir: Optional[Path], estado_dir: Optional[Path], *, demo: boo
         from .demo import sembrar_demo
         sembrar_demo(estado, {"id": None, "usuario": "demo", "rol": "admin"})
     servicio = PortalServicio(estado, fuente, Path(estado_dir), reporting, data_dir)
-    return Contexto(servicio, estado, https=https, hosts_permitidos=hosts, confiar_proxy=confiar_proxy, roles_2fa=roles_2fa, perimetro_token=perimetro_token)
+    return Contexto(servicio, estado, https=https, hosts_permitidos=hosts, confiar_proxy=confiar_proxy, roles_2fa=roles_2fa, perimetro_token=perimetro_token, proxy_saltos=proxy_saltos)
 
 
 def validar_exposicion(host: str, tls: bool, detras_de_proxy: bool, hosts: List[str]) -> None:
@@ -83,6 +83,13 @@ def run(host: str, port: int, ctx: Contexto, web_dir: Optional[Path], tls_cert: 
         pass
     finally:
         srv.server_close()
+
+
+def _saltos() -> int:
+    try:
+        return max(1, int(os.environ.get("CXC_PROXY_HOPS", "1")))
+    except ValueError:
+        raise SystemExit("CXC_PROXY_HOPS debe ser un entero (numero de proxies de confianza delante de la app).")
 
 
 def main(argv=None) -> int:
@@ -115,7 +122,7 @@ def main(argv=None) -> int:
     if expuesto and not roles_2fa:
         raise SystemExit("Expuesto a la red: el segundo factor es obligatorio (--requerir-2fa).")
     ctx = construir(a.datos, a.estado, demo=a.demo, https=tls or a.detras_de_proxy_https, hosts=hosts, confiar_proxy=a.detras_de_proxy_https,
-                    reporting_src=a.reporting_src, roles_2fa=roles_2fa, perimetro_token=token)
+                    reporting_src=a.reporting_src, roles_2fa=roles_2fa, perimetro_token=token, proxy_saltos=_saltos())
     run(a.host, a.port, ctx, a.web, a.tls_cert, a.tls_key)
     return 0
 

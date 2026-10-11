@@ -1,0 +1,5 @@
+# Archivos que se ejecutan o interpretan en Linux (contenedor): siempre LF, aunque se extraigan en Windows.
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+railway.toml text eol=lf

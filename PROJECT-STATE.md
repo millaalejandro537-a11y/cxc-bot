@@ -75,3 +75,6 @@ Detalle en `docs/PORTAL-MVP.md`, `docs/DESPLIEGUE-SEGURO.md`, `docs/INTEGRACION-
 - Intactos: documento de hojas de visita v1 (8 hojas, mismo sha256 y archivo), decisiones (7, sin ninguna de Occidente), sin salidas ni hojas regeneradas. Respaldo previo: `CxC-Datos-Privados\respaldos-pre-occidente\`.
 - SIGUE PENDIENTE de gerencia: los colores son PRELIMINARES; 15 candidatos a solo contado y 1 cliente sin evidencia. La ruta queda `EN_CONFIRMACION` (marcarla OPERATIVA es acción humana en Confirmar clientes). Colocación de viñetas físicas no confirmada. Sin saldos importados.
 - Pruebas: 436 passed, 1 skipped (POSIX); las 12 de datos privados requieren `CXC_DATOS_DIR=...\2026-10-08`.
+
+## Auditoría previa al despliegue (2026-10-11, sin push, sin deploy, sin Docker)
+Informe completo, alternativas y costos: `docs/AUDITORIA-DESPLIEGUE.md`. Corregido: healthcheck bloqueado por validación de Host; export/respaldo omitían documentos (hojas de visita) y cola de impresión; IP falsificable vía X-Forwarded-For; sin timeout de socket; Dockerfile (propiedad del volumen, VOLUME, dependencias fijadas, LF en scripts). NO verificado: imagen en Linux/Docker (apagado). Falta: respaldo programado externo cifrado, carga de documentos/datos en la nube, decisión sobre datos financieros fuera de la PC. Pruebas: 445 passed, 1 skipped (con `CXC_DATOS_DIR`).
