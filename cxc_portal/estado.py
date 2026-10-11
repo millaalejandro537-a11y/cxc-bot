@@ -646,7 +646,27 @@ class Estado(OperacionesMixin, DocumentosMixin):
             extra.unlink(missing_ok=True)
         destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(archivo, destino)
+        docs = archivo.parent / "documentos"   # copia espejo que deja `respaldar`: se repone sin sobrescribir lo existente
+        if docs.is_dir():
+            for f in docs.rglob("*"):
+                rel = f.relative_to(docs)
+                if f.is_file() and not (destino.parent / "documentos" / rel).exists():
+                    (destino.parent / "documentos" / rel).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, destino.parent / "documentos" / rel)
         return destino
+
+    def verificar_documentos(self) -> List[str]:
+        """Problemas de integridad entre la BD y los .xlsx en disco (falta el archivo o su sha256 no coincide). Lista vacia = todo coincide."""
+        with self.tx() as c:
+            filas = [dict(r) for r in c.execute("SELECT id, route_id, version, almacenado, sha256 FROM documentos")]
+        problemas = []
+        for d in filas:
+            f = self.carpeta_documentos / d["almacenado"]
+            if not f.is_file():
+                problemas.append(f"documento {d['id']} ({d['route_id']} v{d['version']}): falta el archivo {d['almacenado']}")
+            elif hashlib.sha256(f.read_bytes()).hexdigest() != d["sha256"]:
+                problemas.append(f"documento {d['id']} ({d['route_id']} v{d['version']}): el hash no coincide")
+        return problemas
 
     TABLAS_EXPORT = ("meta", "vendedores", "usuarios", "rutas", "zonas", "clientes_ruta", "decisiones", "salidas", "salida_resumen", "hojas_visita", "visitas",
                      "visita_eventos", "folder_hwm", "candidatos", "auditoria", "documentos", "salida_documentos", "agentes_impresion", "cola_impresion")

@@ -118,6 +118,7 @@ def test_archivos_de_despliegue_son_coherentes():
     assert not re.search(r"^\s*VOLUME\b", docker, re.M)                                  # las plataformas montan el volumen; VOLUME esta prohibido/ignorado
     assert not re.search(r"^\s*USER\b", docker, re.M) and "ENTRYPOINT" in docker        # el entrypoint corrige la propiedad del volumen y baja de privilegios
     assert "--detras-de-proxy-https" in docker and "--hosts-permitidos" in docker and "0.0.0.0" in docker
+    assert "PORT=8080" in docker and "EXPOSE 8080" in docker                              # el servidor lee PORT: sin esto escucha en 8780 y el healthcheck de la imagen falla
     assert re.search(r'"openpyxl==\d', docker) and "tzdata" in docker                   # dependencias de ejecucion fijadas
     assert not re.search(r"^RUN .*pytest", docker, re.M)
     entry = (RAIZ / "deploy" / "entrypoint.sh").read_bytes()
@@ -128,3 +129,27 @@ def test_archivos_de_despliegue_son_coherentes():
     assert 'healthcheckPath = "/api/health"' in toml and "numReplicas = 1" in toml       # SQLite: una sola instancia
     ignore = (RAIZ / ".dockerignore").read_text(encoding="utf-8")
     assert "*.sqlite3" in ignore and ".env" in ignore and "tests" in ignore              # nada de BD, secretos ni datos reales dentro de la imagen
+
+
+# ------------------------------------------------------------------ restauracion completa (BD + documentos) y verificacion de integridad
+def test_restaurar_repone_los_documentos_y_verifica_hashes(tmp_path):
+    ctx, d, datos = _con_documento(tmp_path)
+    bd = ctx.estado.respaldar(tmp_path / "bk")
+    nuevo = tmp_path / "otro" / "estado" / "portal.sqlite3"
+    Estado.restaurar(bd, nuevo)
+    r = Estado(nuevo)
+    assert (nuevo.parent / "documentos" / d["almacenado"]).read_bytes() == datos and r.verificar_documentos() == []
+    (nuevo.parent / "documentos" / d["almacenado"]).write_bytes(b"alterado")
+    assert "hash no coincide" in r.verificar_documentos()[0]
+    (nuevo.parent / "documentos" / d["almacenado"]).unlink()
+    assert "falta el archivo" in r.verificar_documentos()[0]
+
+
+def test_cli_restaurar_falla_si_los_documentos_no_coinciden(tmp_path):
+    from cxc_portal import admin
+    ctx, d, _ = _con_documento(tmp_path)
+    bd = ctx.estado.respaldar(tmp_path / "bk")
+    (tmp_path / "bk" / "documentos" / d["almacenado"]).unlink()                          # respaldo incompleto
+    nuevo = tmp_path / "e2"
+    nuevo.mkdir()
+    assert admin.main(["restaurar", "--estado", str(nuevo), "--archivo", str(bd)]) == 1

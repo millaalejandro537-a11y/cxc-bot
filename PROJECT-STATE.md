@@ -78,3 +78,6 @@ Detalle en `docs/PORTAL-MVP.md`, `docs/DESPLIEGUE-SEGURO.md`, `docs/INTEGRACION-
 
 ## Auditoría previa al despliegue (2026-10-11, sin push, sin deploy, sin Docker)
 Informe completo, alternativas y costos: `docs/AUDITORIA-DESPLIEGUE.md`. Corregido: healthcheck bloqueado por validación de Host; export/respaldo omitían documentos (hojas de visita) y cola de impresión; IP falsificable vía X-Forwarded-For; sin timeout de socket; Dockerfile (propiedad del volumen, VOLUME, dependencias fijadas, LF en scripts). NO verificado: imagen en Linux/Docker (apagado). Falta: respaldo programado externo cifrado, carga de documentos/datos en la nube, decisión sobre datos financieros fuera de la PC. Pruebas: 445 passed, 1 skipped (con `CXC_DATOS_DIR`).
+
+## Prueba real en contenedor (2026-10-11)
+Imagen construida y probada en Docker 29.8.1 con datos sintéticos (detalle en `docs/AUDITORIA-DESPLIEGUE.md` §8): API/2FA/permisos, persistencia tras kill -9, respaldo+restauración con documentos en volumen nuevo, proceso UID 10001 sin capacidades, configuración endurecida (read-only, cap-drop ALL). Corregido: `ENV PORT=8080` faltante y `restaurar` sin documentos/verificación. Contenedores y volúmenes de prueba eliminados; la imagen `cxcprobe/portal:test` se conserva. Pruebas: 435 passed + 13 skipped (12 requieren `CXC_DATOS_DIR`, 1 POSIX).

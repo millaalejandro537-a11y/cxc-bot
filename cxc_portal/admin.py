@@ -76,8 +76,9 @@ def cmd_restaurar(a) -> int:
         d = Estado.restaurar(Path(a.archivo), Path(a.estado) / "portal.sqlite3", a.forzar)
     except ErrorNegocio as e:
         raise SystemExit(f"Error: {e.mensaje}")
-    print(f"Restaurado en {d}. Reinicie el portal.")
-    return 0
+    problemas = Estado(d).verificar_documentos()
+    print(f"Restaurado en {d}. Documentos verificados contra sus hashes: {'todos coinciden' if not problemas else 'PROBLEMAS: ' + '; '.join(problemas)}. Reinicie el portal.")
+    return 1 if problemas else 0
 
 
 def cmd_exportar(a) -> int:

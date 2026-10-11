@@ -7,7 +7,7 @@ COPY portal-web/ ./
 RUN npm run build
 
 FROM python:3.12-slim
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=America/Tegucigalpa
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TZ=America/Tegucigalpa PORT=8080
 RUN useradd --create-home --uid 10001 app && mkdir -p /data/estado /data/datos && chown -R app /data
 WORKDIR /app
 # Dependencias de ejecucion FIJADAS (requirements.txt incluye pytest, que no va en produccion). tzdata explicito: no depender del sistema base.
