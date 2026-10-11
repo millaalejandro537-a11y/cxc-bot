@@ -3,6 +3,7 @@
     python -m cxc_portal.admin crear-usuario --estado DIR --usuario ana --rol gerencia [--vendedor "Nombre"] [--generar-clave]
     python -m cxc_portal.admin sembrar --estado DIR --datos DIR
     python -m cxc_portal.admin usuarios --estado DIR
+    python -m cxc_portal.admin integrar-ruta --estado DIR --ruta ID --archivo JSON [--aplicar]
 
 La clave se pide por teclado (no queda en el historial) o, con --generar-clave, se crea una aleatoria que se guarda en
 <estado>/credenciales_iniciales.txt (permisos restringidos); el usuario debe cambiarla en su primer acceso.
@@ -125,6 +126,19 @@ def cmd_importar_documento(a) -> int:
     return 0
 
 
+def cmd_integrar_ruta(a) -> int:
+    from .integrar_ruta import ConflictoIntegracion, integrar
+    try:
+        print(integrar(_estado(a), ACTOR, Path(a.archivo), a.ruta.upper(), aplicar=a.aplicar))
+    except ConflictoIntegracion as e:
+        raise SystemExit("CONFLICTO (no se escribió nada):\n  - " + "\n  - ".join(e.conflictos))
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    if not a.aplicar:
+        print("Simulación: sin cambios. Repita con --aplicar para escribir.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -159,6 +173,12 @@ def main(argv=None) -> int:
     p.add_argument("--confirmar", action="store_true")
     p.add_argument("--proponer-clientes", action="store_true")
     p.set_defaults(func=cmd_importar_documento)
+    p = sub.add_parser("integrar-ruta")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--ruta", required=True)
+    p.add_argument("--archivo", required=True, help="JSON de organización física aprobada")
+    p.add_argument("--aplicar", action="store_true", help="Sin esta bandera solo simula y detecta conflictos")
+    p.set_defaults(func=cmd_integrar_ruta)
     a = ap.parse_args(argv)
     return a.func(a)
 

@@ -68,3 +68,10 @@ Detalle en `docs/PORTAL-MVP.md`, `docs/DESPLIEGUE-SEGURO.md`, `docs/INTEGRACION-
 - **Seguridad:** 2FA TOTP, token de perímetro, health con BD, respaldo/restauración/exportación probados.
 - **Frontend:** 2FA, salidas, hojas de visita (vista de impresión), visitas, clientes por confirmar, cola de impresión.
 - **Nube:** `docs/NUBE-ALOJAMIENTO.md` (propuesta Railway + costos), `Dockerfile`/`railway.toml` borradores NO construidos.
+
+## Occidente integrado (2026-10-10, sin push, sin deploy)
+- Archivo aprobado: `OCCIDENTE_PORTAL_116_CLIENTES_ZONAS_60D.json` (de `OCCIDENTE OCTUBRE.xlsx`, sha256 `b585021f…`). Integrado con `python -m cxc_portal.admin integrar-ruta --estado DIR --ruta OCCIDENTE --archivo JSON [--aplicar]` (`cxc_portal/integrar_ruta.py`): simula por defecto, se detiene sin escribir ante cualquier contradicción y es idempotente.
+- Resultado en la BD real: 116 clientes únicos confirmados como pertenecientes a la ruta (foránea, 60 días, José Carpio), 20 zonas, 116 folders y orden físico idénticos al JSON; folders marcados como usados (no se reutilizan). Los 116 candidatos pasaron a `confirmada`.
+- Intactos: documento de hojas de visita v1 (8 hojas, mismo sha256 y archivo), decisiones (7, sin ninguna de Occidente), sin salidas ni hojas regeneradas. Respaldo previo: `CxC-Datos-Privados\respaldos-pre-occidente\`.
+- SIGUE PENDIENTE de gerencia: los colores son PRELIMINARES; 15 candidatos a solo contado y 1 cliente sin evidencia. La ruta queda `EN_CONFIRMACION` (marcarla OPERATIVA es acción humana en Confirmar clientes). Colocación de viñetas físicas no confirmada. Sin saldos importados.
+- Pruebas: 436 passed, 1 skipped (POSIX); las 12 de datos privados requieren `CXC_DATOS_DIR=...\2026-10-08`.
