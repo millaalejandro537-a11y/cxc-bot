@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from cxc_bot import payment_semaphore as ps
 
 from .estado import ErrorNegocio, Estado
-from .fuentes import FuenteDatos
+from .fuentes import FuenteDatos, es_operable, es_operable
 
 ENV_DATOS = "CXC_DATOS_DIR"
 ENV_ESTADO = "CXC_ESTADO_DIR"
@@ -116,7 +116,7 @@ class PortalServicio:
         decisiones = {c: decision_a_motor(d) for c, d in self.estado.decisiones_vigentes().items()}
         info = self.info_fuente()
         fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": []}
-        usable = self.fuente is not None and not self.fuente.en_vivo
+        usable = es_operable(self.fuente)
         out: Dict[str, Ruta] = {}
         for r in self.estado.listar_rutas():
             codigos = [c["codigo"] for c in r["clientes"]]
@@ -234,8 +234,8 @@ class PortalServicio:
         r = self.estado.obtener_ruta(route_id)
         if not r or not r["activa"]:
             raise ErrorNegocio("Ruta no encontrada.", 404)
-        if self.fuente is None or self.fuente.en_vivo:
-            raise ErrorNegocio("No hay un snapshot utilizable para llenar la hoja de datos SAP.", 409)
+        if not es_operable(self.fuente):
+            raise ErrorNegocio("No hay una fuente utilizable para llenar la hoja de datos SAP.", 409)
         if self.data_dir is None:
             raise ErrorNegocio("No hay directorio de datos configurado.", 400)
         try:
@@ -291,8 +291,8 @@ class PortalServicio:
     def buscar_candidatos(self, palabras: List[str], route_id: str, limite: int = 200) -> List[dict]:
         """Clientes de la fuente cuyo nombre contiene alguna palabra (p. ej. el nombre de una zona). NO modifica nada: devuelve sugerencias
         con la ruta a la que ya pertenecen (si alguna) para que una persona decida."""
-        if self.fuente is None or self.fuente.en_vivo:
-            raise ErrorNegocio("No hay un snapshot utilizable para buscar clientes.", 409)
+        if not es_operable(self.fuente):
+            raise ErrorNegocio("No hay una fuente utilizable para buscar clientes.", 409)
         claves = [self._norm(p) for p in palabras if self._norm(p)]
         if not claves:
             raise ErrorNegocio("Indique al menos una palabra de búsqueda (p. ej. el nombre de la zona).")

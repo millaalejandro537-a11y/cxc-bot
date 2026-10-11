@@ -9,6 +9,7 @@ import { Seguridad } from './Seguridad.jsx'
 import { Documentos } from './Documentos.jsx'
 import { Salidas } from './Salidas.jsx'
 import { Impresion } from './Impresion.jsx'
+import { Avisos, Calendario, Dashboard } from './Operacion.jsx'
 import { DecisionPanel } from './Decision.jsx'
 
 function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente, capacidades }) {
@@ -396,7 +397,10 @@ export default function App() {
         <nav>
           <button className={vista.t === 'panel' ? 'on' : ''} onClick={() => raiz('panel')}>Panel</button>
           <button className={vista.t === 'alertas' ? 'on' : ''} onClick={() => raiz('alertas')}>Alertas</button>
+          <button className={vista.t === 'calendario' ? 'on' : ''} onClick={() => raiz('calendario')}>Calendario</button>
           <button className={vista.t === 'salidas' ? 'on' : ''} onClick={() => raiz('salidas')}>Salidas</button>
+          <button className={vista.t === 'avisos' ? 'on' : ''} onClick={() => raiz('avisos')}>Avisos</button>
+          <button className={vista.t === 'dashboard' ? 'on' : ''} onClick={() => raiz('dashboard')}>Dashboard</button>
           {conHojas.length > 0 && <button className={vista.t === 'visitas' ? 'on' : ''} onClick={() => raiz('visitas')}>Visitas</button>}
           {conHojas.length > 0 && <button className={vista.t === 'documentos' ? 'on' : ''} onClick={() => raiz('documentos')}>Hojas de visita</button>}
           <button className={vista.t === 'impresion' ? 'on' : ''} onClick={() => raiz('impresion')}>Impresión</button>
@@ -417,6 +421,9 @@ export default function App() {
         {vista.t === 'documentos' && <Documentos rutas={rutas} user={user} />}
         {vista.t === 'salidas' && <Salidas rutas={rutas} user={user} abrirDocumentos={() => raiz('documentos')} />}
         {vista.t === 'impresion' && <Impresion user={user} />}
+        {vista.t === 'calendario' && <Calendario rutas={rutas} user={user} />}
+        {vista.t === 'avisos' && <Avisos rutas={rutas} user={user} />}
+        {vista.t === 'dashboard' && <Dashboard user={user} />}
         {vista.t === 'seguridad' && <Seguridad user={user} onCambio={() => api('/auth/me').then((d) => setUser(d.usuario))} />}
         {vista.t === 'reportes' && glob && <Reportes />}
         {vista.t === 'admin' && user.rol === 'admin' && <Admin />}

@@ -91,6 +91,13 @@ class FlujoMixin:
             f["detalle"] = json.loads(f.pop("detalle_json")) if f.get("detalle_json") else None
         return filas
 
+    def cerrar_alertas(self, salida_id: int, tipos: tuple, nota: str) -> int:
+        """Cierra (por el sistema) los avisos abiertos de esos tipos para la salida: p. ej. 'preparacion atrasada' cuando la salida ya se preparo."""
+        with self.tx() as c:
+            n = c.execute(f"UPDATE alertas SET estado='cerrada', atendida_por='sistema', atendida_en=?, nota=? WHERE salida_id=? AND estado <> 'cerrada' AND tipo IN ({','.join('?' * len(tipos))})",
+                          (self._t(), nota, salida_id, *tipos)).rowcount
+            return n
+
     def atender_alerta(self, actor: dict, alerta_id: int, estado: str, nota: str = "") -> dict:
         from .estado import ErrorNegocio
         if estado not in ("vista", "cerrada"):

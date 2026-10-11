@@ -39,6 +39,7 @@ COLUMNAS_NUEVAS = {
     "rutas": [("requiere_hojas_visita", "INTEGER NOT NULL DEFAULT 0"), ("numeracion_folders", "TEXT NOT NULL DEFAULT 'ZONA'"),
               ("implantacion", "TEXT NOT NULL DEFAULT 'OPERATIVA'")],
     "visitas": [("cobro", "REAL"), ("venta", "REAL")],
+    "cola_impresion": [("excel_id", "INTEGER")],
     "usuarios": [("totp_secret", "TEXT"), ("totp_activo", "INTEGER NOT NULL DEFAULT 0"), ("recovery_hashes", "TEXT"), ("totp_ultimo_paso", "INTEGER NOT NULL DEFAULT 0")],
 }
 

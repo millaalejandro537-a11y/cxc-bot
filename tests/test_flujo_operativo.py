@@ -256,3 +256,72 @@ def test_el_notificador_simulado_no_envia_nada_y_el_candado_esta_cerrado():
     import cxc_portal.flujo as fl
     assert fl.ENVIO_EXTERNO_HABILITADO is False
     assert "SIMULADO" in NotificadorSimulado().enviar({"destinatario": "x"})
+
+
+# ------------------------------------------------------------------ permisos de los archivos versionados y herramientas de operacion
+def test_excel_versionado_respeta_la_visibilidad_por_ruta_y_exige_csrf(env):
+    s, ctx, _ = env
+    sid = _preparar_lv(ctx)
+    ctx.estado.revisar_salida(ACTOR, sid, "Excepciones revisadas.")
+    e = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")
+    ven, ven2, ger = (cliente_con_login(s, u, c) for u, c in (("ven1", CLAVE_VEN), ("ven2", CLAVE_VEN2), ("ger1", CLAVE_GER)))
+    assert ven.get(f"/api/excel/{e['id']}/descargar")[0] == 200
+    assert ven2.get(f"/api/excel/{e['id']}/descargar")[0] == 404                       # vendedor de otra ruta: ni se revela que existe
+    assert ven2.get("/api/rutas/LAS_VEGAS/excel")[0] == 404
+    assert ven.post(f"/api/salidas/{sid}/excel", {"base": "base.xlsx"})[0] == 403        # el vendedor no publica
+    assert ven.post(f"/api/salidas/{sid}/impresion", {})[0] == 403
+    tok, ger.csrf = ger.csrf, None
+    assert ger.post("/api/salidas/serie", {"ruta": "DEMO", "fechas": ["2026-10-26"]})[0] == 403   # sin CSRF
+    ger.csrf = tok
+    assert ger.post("/api/admin/feriados", {"fecha": "no-es-fecha", "nombre": "x"})[0] == 400
+
+
+def test_cli_ciclo_diario_prepara_e_imprime_resumen(tmp_path, capsys):
+    from cxc_portal import admin
+    ctx = crear_entorno(tmp_path)
+    FlujoOperativo(ctx.servicio).programar_salidas(ACTOR, "DEMO", ["2026-10-19"])
+    assert admin.main(["ciclo-diario", "--estado", str(tmp_path / "estado"), "--demo", "--fecha", "2026-10-15"]) == 0
+    assert "preparadas 1" in capsys.readouterr().out
+    assert admin.main(["ciclo-diario", "--estado", str(tmp_path / "estado"), "--demo", "--fecha", "2026-10-15"]) == 0
+    assert "preparadas 0" in capsys.readouterr().out and ctx.estado.listar_salidas("DEMO")[0]["estado"] == "preparada"
+
+
+def test_dashboard_usa_cxc_reporting_core_para_la_cartera_cuando_esta_disponible(tmp_path, monkeypatch):
+    import os
+
+    from cxc_portal import dashboard as dash
+    from cxc_portal.reporting_bridge import ReportingNoDisponible, ReportingService
+    src = Path(r"C:\Users\LTP\Documents\Trabajo-Sync\Cosprobell\cxc-reporting-core\src")
+    if not (src / "cxc_reporting").is_dir():
+        pytest.skip("cxc-reporting-core no está disponible en este equipo")
+    monkeypatch.setenv("CXC_REPORTING_SRC", str(src))
+    ctx = crear_entorno(tmp_path)
+    try:
+        rep = ReportingService(ctx.servicio.fuente, tmp_path / "estado")
+    except ReportingNoDisponible:
+        pytest.skip("cxc-reporting-core no es importable")
+    d = dash.construir(ctx.servicio, ctx.estado, ctx.servicio.rutas(), rep)
+    assert d["core"]["disponible"] is False and "corte" in d["core"]["motivo"].lower()      # sin corte importado: se dice, no se inventa
+    rep.importar_corte(ctx.estado.listar_rutas())
+    d = dash.construir(ctx.servicio, ctx.estado, ctx.servicio.rutas(), rep)
+    c = d["core"]
+    assert c["disponible"] and "NO_VALIDADO" in c["estado_validacion"] and c["cartera"]["n_documentos_abiertos"] == 3 and c["aging"] and c["por_vendedor"]
+    assert c["clientes_prioritarios"] and "NO VALIDADO" in c["aviso"]
+
+
+def test_el_aviso_de_preparacion_atrasada_se_cierra_solo_al_preparar_la_salida(env):
+    _, ctx, _ = env
+    ctx.flujo.programar_salidas(ACTOR, "DEMO", ["2026-10-13"])
+    ctx.flujo.ciclo_diario(hoy="2026-10-20")
+    sid = ctx.estado.listar_salidas("DEMO")[0]["id"]
+    assert [a["estado"] for a in ctx.estado.listar_alertas(["DEMO"], tipo="PREPARACION_ATRASADA")] == ["nueva"]
+    ctx.flujo.preparar(ACTOR, sid)
+    a = ctx.estado.listar_alertas(["DEMO"], tipo="PREPARACION_ATRASADA")[0]
+    assert a["estado"] == "cerrada" and a["atendida_por"] == "sistema"
+
+
+def test_cumplimiento_no_lista_salidas_futuras_sin_registros(env):
+    from cxc_portal import dashboard as dash
+    _, ctx, _ = env
+    ctx.flujo.programar_salidas(ACTOR, "DEMO", ["2026-10-19", "2026-10-26"])
+    assert dash.cumplimiento(ctx.estado, ctx.servicio.rutas()) == []

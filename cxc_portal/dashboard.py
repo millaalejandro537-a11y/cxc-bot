@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
+from .fuentes import es_operable
+
 # SUPUESTOS de "oportunidad comercial" (a confirmar con gerencia): cliente clasificado A con 2 o menos facturas en los ultimos 180 dias.
 VENTANA_OPORTUNIDAD_DIAS = 180
 COMPRAS_ESPORADICAS_MAX = 2
@@ -21,7 +23,7 @@ def _clientes(rutas) -> List[tuple]:
 def oportunidades(servicio, rutas) -> dict:
     """Clientes excelentes (A) con compras esporadicas. Solo sugiere: la visita/accion comercial la decide una persona."""
     f = servicio.fuente
-    if f is None or f.en_vivo:
+    if not es_operable(f):
         return {"criterio": "Requiere una fuente con facturas.", "oportunidades": []}
     corte = f.fecha_corte
     desde = corte - timedelta(days=VENTANA_OPORTUNIDAD_DIAS)
@@ -49,6 +51,8 @@ def cumplimiento(estado, rutas, ultimas: int = 3) -> List[dict]:
         for s in estado.listar_salidas(rid)[:ultimas]:
             seg = estado.seguimiento_salida(s["id"])
             t = seg["totales"]
+            if s["estado"] in ("programada", "preparada", "cancelada") and not (t["visitados"] or seg["resumen"]["no_visitada"]):
+                continue   # una salida futura o sin registros no es "cumplimiento" todavia
             out.append({"ruta": rid, "ruta_nombre": r.nombre, "vendedor": r.vendedor, "salida": s["id"], "fecha_salida": s["fecha_salida"], "estado": s["estado"],
                         "clientes": t["clientes"], "visitados": t["visitados"], "no_visitados": seg["resumen"]["no_visitada"], "pendientes": seg["resumen"]["pendiente"],
                         "cumplimiento": t["cumplimiento"], "cobro_declarado": t["cobro_declarado"], "venta_declarada": t["venta_declarada"]})

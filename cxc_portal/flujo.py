@@ -149,6 +149,7 @@ class FlujoOperativo:
     # ------------------------------------------------------------------ preparacion + alertas + notificaciones
     def preparar(self, actor: dict, sid: int) -> dict:
         sal = self.servicio.preparar_salida(actor, sid)
+        self.estado.cerrar_alertas(sid, ("PREPARACION_ATRASADA", "PREPARACION_FALLIDA"), "Resuelto: la salida ya fue preparada.")
         self.generar_alertas(sal)
         self.encolar_aviso_preparacion(sal)
         return sal
@@ -277,6 +278,37 @@ class FlujoOperativo:
                                                   f"Resumen de cartera y rutas · semana {iso[1]}", cuerpo)
         return n
 
+    # ------------------------------------------------------------------ impresion (solo registro de solicitudes)
+    def preparar_impresion(self, actor: dict, sid: int, copias: int = 1) -> dict:
+        """Crea, sin duplicar, las solicitudes de la salida: hoja de visita vinculada y Excel vigente de la salida SI no es borrador.
+        Nada se imprime: un futuro agente autenticado tomara los pendientes."""
+        sal = self.estado.obtener_salida(sid)
+        if not sal:
+            raise ErrorNegocio("Salida no encontrada.", 404)
+        activas = [i for i in self.estado.listar_impresiones() if i["salida_id"] == sid and i["estado"] in ("pendiente", "tomado", "impreso")]
+        creadas, existentes, omitidas = [], [], []
+        for d in self.estado.documentos_de_salida(sid):
+            if d["tipo"] != "HOJA_VISITA":
+                continue
+            previa = next((i for i in activas if i["documento_id"] == d["id"]), None)
+            if previa:
+                existentes.append(previa["id"])
+            else:
+                creadas.append(self.estado.solicitar_impresion(actor, "HOJA_VISITA", sal["route_id"], sid, d["id"], f"Hoja de visita v{d['version']}", copias)["id"])
+        e = self.estado.excel_actual(sal["route_id"])
+        if e and e["fecha_salida"] == sal["fecha_salida"]:
+            if e["borrador"]:
+                omitidas.append({"tipo": "EXCEL_RUTA", "motivo": "El Excel es un BORRADOR (fuente no vigente): no se prepara su impresión."})
+            else:
+                previa = next((i for i in activas if i.get("excel_id") == e["id"]), None)
+                if previa:
+                    existentes.append(previa["id"])
+                else:
+                    creadas.append(self.estado.solicitar_impresion(actor, "EXCEL_RUTA", sal["route_id"], sid, None, None, copias, excel_id=e["id"])["id"])
+        elif not e:
+            omitidas.append({"tipo": "EXCEL_RUTA", "motivo": "La salida aún no tiene Excel publicado."})
+        return {"salida": sid, "creadas": creadas, "existentes": existentes, "omitidas": omitidas, "nota": "Solo registro: no hay impresoras conectadas."}
+
     # ------------------------------------------------------------------ Excel de ruta publicable
     def generar_excel_salida(self, actor: dict, sid: int, base: str) -> dict:
         sal = self.estado.obtener_salida(sid)
@@ -291,7 +323,7 @@ class FlujoOperativo:
             raise ErrorNegocio(f"Hay {len(pend)} cliente(s) propuesto(s) sin confirmar o rechazar: el roster del Excel no está cerrado.", 409)
         datos, nombre, avisos = self.servicio.generar_excel(actor, sal["route_id"], base, sal["fecha_salida"])
         fuente = self.servicio.fuente
-        borrador = not (fuente and fuente.en_vivo)
+        borrador = not bool(getattr(fuente, "apta_para_publicar", False))   # solo una fuente en vivo REAL, fresca y sin problemas de calidad publica
         ruta = self.estado.obtener_ruta(sal["route_id"])
         return self.estado.registrar_excel(actor, sal["route_id"], sid, sal["fecha_salida"], nombre, datos, hashlib.sha256(datos).hexdigest(), huella_excel(datos), borrador,
                                            getattr(fuente, "tipo", "SIN_FUENTE"), fuente.fecha_corte.isoformat() if fuente else "", len(ruta["clientes"]), avisos)

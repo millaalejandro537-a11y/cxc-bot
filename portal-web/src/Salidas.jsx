@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { api, post } from './api.js'
 import { fdate, money } from './ui.jsx'
+import { ExcelSalida } from './Operacion.jsx'
 
 const EST = { programada: 'Programada', preparada: 'Preparada', en_curso: 'En curso', cerrada: 'Cerrada', cancelada: 'Cancelada' }
 const SEG = { pendiente: 'Pendiente', prevista: 'Prevista', visitada_firmada: 'Visitada y firmada', visitada_sin_firma: 'Visitada sin firma', no_visitada: 'No visitada' }
@@ -90,12 +91,14 @@ export function Salidas({ rutas, user, abrirDocumentos }) {
           )}
           {det.salida.revisada_por && <p className="okmsg small">Revisada por {det.salida.revisada_por}: {det.salida.revision_nota}</p>}
           {ruta?.requiere_hojas_visita && <p><button className="sec" onClick={abrirDocumentos}>Ver hoja de visita vinculada</button></p>}
+          {det.salida.reporte_excepciones && <ExcelSalida salida={det.salida} ruta={rid} gestiona={gestiona} todas={lista} />}
           <h4>Seguimiento de visitas</h4>
           {ruta?.requiere_hojas_visita ? (
             <>
               <p className="muted small">{Object.entries(det.seguimiento.resumen).map(([k, v]) => `${SEG[k]} ${v}`).join(' · ')}</p>
-              <div className="tablewrap"><table><thead><tr><th>Folder</th><th>Cliente</th><th>Estado</th></tr></thead>
-                <tbody>{det.seguimiento.clientes.map((c) => <tr key={c.codigo}><td>{c.folder}</td><td>{c.nombre}</td><td>{SEG[c.estado]}{c.motivo ? ` — ${c.motivo}` : ''}</td></tr>)}</tbody></table></div>
+              <div className="tablewrap"><table><thead><tr><th>Folder</th><th>Cliente</th><th>Estado</th><th>Cobro</th><th>Venta</th></tr></thead>
+                <tbody>{det.seguimiento.clientes.map((c) => <tr key={c.codigo}><td>{c.folder}</td><td>{c.nombre}</td><td>{SEG[c.estado]}{c.motivo ? ` — ${c.motivo}` : ''}</td><td>{c.cobro != null ? money(c.cobro) : '—'}</td><td>{c.venta != null ? money(c.venta) : '—'}</td></tr>)}</tbody></table></div>
+              {det.seguimiento.totales && <p className="muted small">Visitados {det.seguimiento.totales.visitados}/{det.seguimiento.totales.clientes} · cobro declarado {money(det.seguimiento.totales.cobro_declarado)} · venta declarada {money(det.seguimiento.totales.venta_declarada)} (montos de campo, no de SAP)</p>}
             </>
           ) : <p className="muted">Esta ruta no usa hojas de visita.</p>}
         </section>

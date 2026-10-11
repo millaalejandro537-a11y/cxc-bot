@@ -206,6 +206,19 @@ def cmd_verificar_respaldo(a) -> int:
     return 0
 
 
+def cmd_ciclo_diario(a) -> int:
+    """Tarea programada diaria: prepara las salidas que entran en su ventana, genera avisos y procesa notificaciones SIMULADAS. Idempotente."""
+    from .server import construir
+    ctx = construir(Path(a.datos) if a.datos else None, Path(a.estado), demo=a.demo)
+    try:
+        r = ctx.flujo.ciclo_diario(ACTOR, a.fecha)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(f"Ciclo {r['fecha']}: preparadas {len(r['preparadas'])}, atrasadas {len(r['atrasadas'])}, errores {len(r['errores'])}, "
+          f"ya preparadas {r['ya_preparadas']}, futuras {r['futuras']}; notificaciones simuladas {r['notificaciones']['simulado']}.")
+    return 1 if r["errores"] else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -262,6 +275,12 @@ def main(argv=None) -> int:
     p.add_argument("--archivo", required=True)
     p.add_argument("--privada", required=True)
     p.set_defaults(func=cmd_verificar_respaldo)
+    p = sub.add_parser("ciclo-diario")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--datos")
+    p.add_argument("--fecha", help="AAAA-MM-DD (ensayo); por defecto hoy en la zona horaria del negocio")
+    p.add_argument("--demo", action="store_true", help="Fuente sintética (solo pruebas)")
+    p.set_defaults(func=cmd_ciclo_diario)
     p = sub.add_parser("integrar-ruta")
     p.add_argument("--estado", required=True)
     p.add_argument("--ruta", required=True)

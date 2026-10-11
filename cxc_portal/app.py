@@ -29,6 +29,7 @@ from cxc_bot import payment_semaphore as sm
 
 from . import security as sec
 from .estado import ErrorNegocio, Estado
+from .fuentes import es_operable
 from .store import PortalServicio, Ruta
 
 COOKIE = "cxc_session"
@@ -634,8 +635,8 @@ def _reporting(ctx: Contexto):
 @endpoint("POST", "/api/reportes/importar-corte", roles=LECTURA_GLOBAL)
 def reporte_importar(ctx: Contexto, p: Peticion):
     rep = _reporting(ctx)
-    if ctx.servicio.fuente is None or ctx.servicio.fuente.en_vivo:
-        raise ErrorNegocio("No hay un snapshot utilizable para importar.", 409)
+    if not es_operable(ctx.servicio.fuente):
+        raise ErrorNegocio("No hay una fuente utilizable para importar.", 409)
     res = rep.importar_corte(ctx.estado.listar_rutas())
     ctx.estado_auditar(p, "reporte.importar_corte", res.get("id_corte") or "")
     return Respuesta(datos=res)
@@ -893,6 +894,21 @@ def dashboard(ctx: Contexto, p: Peticion):
 def dashboard_mio(ctx: Contexto, p: Peticion):
     from . import dashboard as dash
     return Respuesta(datos=dash.construir(ctx.servicio, ctx.estado, _visibles(ctx, p.usuario), None, global_view=False))
+
+
+@endpoint("POST", "/api/salidas/{sid}/impresion", roles=LECTURA_GLOBAL)
+def salida_impresion(ctx: Contexto, p: Peticion):
+    """Prepara (idempotente) las solicitudes de impresion de la salida: hoja de visita vinculada y Excel vigente si NO es borrador. Solo registra."""
+    _salida_visible(ctx, p)
+    return Respuesta(datos=ctx.flujo.preparar_impresion(p.usuario, int(p.params["sid"])))
+
+
+@endpoint("POST", "/api/agente/{iid}/archivo", roles=None, publico=True)
+def agente_archivo(ctx: Contexto, p: Peticion):
+    ag = _agente(ctx, p)
+    nombre, datos, sha = ctx.estado.archivo_para_agente(ag["id"], int(p.params["iid"]))
+    return Respuesta(cuerpo=datos, tipo="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     cabeceras={"Content-Disposition": f'attachment; filename="{nombre}"', "X-Content-SHA256": sha})
 
 
 def make_handler(ctx: Contexto, web_dir: Optional[Path]):

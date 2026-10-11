@@ -26,7 +26,7 @@ export function Visitas({ rutas }) {
     if (!b.estado) return
     setMsg(null)
     try {
-      await post('/visitas', { ruta: rid, fecha_salida: fecha, codigo, estado: b.estado, motivo: b.motivo || '', observacion: b.observacion || '' })
+      await post('/visitas', { ruta: rid, fecha_salida: fecha, codigo, estado: b.estado, motivo: b.motivo || '', observacion: b.observacion || '', cobro: b.cobro === '' || b.cobro == null ? undefined : Number(b.cobro), venta: b.venta === '' || b.venta == null ? undefined : Number(b.venta) })
       setBorr((x) => ({ ...x, [codigo]: {} }))
       await cargar()
     } catch (e) { setMsg(`${codigo}: ${e.message}`) }
@@ -61,6 +61,7 @@ export function Visitas({ rutas }) {
                   <option value="">—</option>{ESTADOS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
                 </select>
                 {['no_visitada', 'visitada_sin_firma'].includes(b.estado) && <input placeholder="Motivo" value={b.motivo || ''} onChange={(e) => set(c.codigo, 'motivo', e.target.value)} />}
+                {['visitada_firmada', 'visitada_sin_firma'].includes(b.estado) && <><input type="number" min="0" step="0.01" placeholder="Cobro L" value={b.cobro ?? ''} onChange={(e) => set(c.codigo, 'cobro', e.target.value)} /><input type="number" min="0" step="0.01" placeholder="Venta L" value={b.venta ?? ''} onChange={(e) => set(c.codigo, 'venta', e.target.value)} /></>}
                 <button onClick={() => guardar(c.codigo)} disabled={!b.estado}>Guardar</button>
               </td>
             </tr>

@@ -118,7 +118,7 @@ class DocumentosMixin:
 
     # ------------------------------------------------------------------ cola de impresion (SOLO registro; no imprime)
     def solicitar_impresion(self, actor: dict, tipo: str, route_id: Optional[str] = None, salida_id: Optional[int] = None, documento_id: Optional[int] = None,
-                            referencia: Optional[str] = None, copias: int = 1, destino: Optional[str] = None) -> dict:
+                            referencia: Optional[str] = None, copias: int = 1, destino: Optional[str] = None, excel_id: Optional[int] = None) -> dict:
         from .estado import ErrorNegocio
         if tipo not in TIPOS_IMPRESION:
             raise ErrorNegocio(f"Tipo inválido. Use: {', '.join(TIPOS_IMPRESION)}.")
@@ -128,12 +128,17 @@ class DocumentosMixin:
             if tipo == "HOJA_VISITA":
                 if not documento_id or not c.execute("SELECT 1 FROM documentos WHERE id = ? AND route_id = ?", (documento_id, route_id)).fetchone():
                     raise ErrorNegocio("Indique un documento de la ruta para imprimir.", 400)
-            if tipo == "EXCEL_RUTA" and not (referencia and re.fullmatch(r"[\w\-. ]{3,120}\.xlsx", referencia)):
+            if tipo == "EXCEL_RUTA" and excel_id:
+                e = c.execute("SELECT archivo FROM excel_rutas WHERE id = ? AND route_id = ?", (excel_id, route_id)).fetchone()
+                if not e:
+                    raise ErrorNegocio("Indique una versión de Excel de esa ruta.", 400)
+                referencia = referencia or e["archivo"].rsplit("/", 1)[-1]
+            elif tipo == "EXCEL_RUTA" and not (referencia and re.fullmatch(r"[\w\-. ]{3,120}\.xlsx", referencia)):
                 raise ErrorNegocio("Indique el archivo Excel generado (nombre .xlsx).", 400)
             if salida_id and not c.execute("SELECT 1 FROM salidas WHERE id = ?", (salida_id,)).fetchone():
                 raise ErrorNegocio("Salida no encontrada.", 404)
-            iid = c.execute("INSERT INTO cola_impresion(tipo, route_id, salida_id, documento_id, referencia, copias, destino, solicitado_por, solicitado_en) VALUES (?,?,?,?,?,?,?,?,?)",
-                            (tipo, route_id, salida_id, documento_id, referencia, int(copias), destino, actor.get("usuario"), self._t())).lastrowid
+            iid = c.execute("INSERT INTO cola_impresion(tipo, route_id, salida_id, documento_id, referencia, copias, destino, solicitado_por, solicitado_en, excel_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (tipo, route_id, salida_id, documento_id, referencia, int(copias), destino, actor.get("usuario"), self._t(), excel_id)).lastrowid
             self.auditar(c, actor, "impresion.solicitar", "impresion", str(iid), {"tipo": tipo, "ruta": route_id, "documento": documento_id, "copias": copias})
             return dict(c.execute("SELECT * FROM cola_impresion WHERE id = ?", (iid,)).fetchone())
 
@@ -180,6 +185,28 @@ class DocumentosMixin:
                 return None
             c.execute("UPDATE cola_impresion SET estado = 'tomado', agente_id = ?, actualizado_en = ? WHERE id = ?", (agente_id, self._t(), r["id"]))
             return dict(c.execute("SELECT * FROM cola_impresion WHERE id = ?", (r["id"],)).fetchone())
+
+    def archivo_para_agente(self, agente_id: int, iid: int) -> tuple:
+        """(nombre, bytes, sha256) del archivo de una solicitud TOMADA por este agente; verifica el hash registrado antes de entregarlo."""
+        import hashlib
+
+        from .estado import ErrorNegocio
+        with self.tx() as c:
+            r = c.execute("SELECT * FROM cola_impresion WHERE id = ? AND agente_id = ? AND estado = 'tomado'", (iid, agente_id)).fetchone()
+            if not r:
+                raise ErrorNegocio("Solicitud no encontrada o no asignada a este agente.", 404)
+            if r["documento_id"]:
+                d = c.execute("SELECT almacenado, sha256, route_id, version FROM documentos WHERE id = ?", (r["documento_id"],)).fetchone()
+                ruta, nombre = self.carpeta_documentos / d["almacenado"], f"{d['route_id']}_hojas_de_visita_v{d['version']}.xlsx"
+            elif r["excel_id"]:
+                d = c.execute("SELECT archivo, sha256 FROM excel_rutas WHERE id = ?", (r["excel_id"],)).fetchone()
+                ruta, nombre = self.carpeta_excel / d["archivo"], d["archivo"].rsplit("/", 1)[-1]
+            else:
+                raise ErrorNegocio("La solicitud no tiene un archivo del portal asociado.", 409)
+        datos = ruta.read_bytes() if ruta.is_file() else None
+        if datos is None or hashlib.sha256(datos).hexdigest() != d["sha256"]:
+            raise ErrorNegocio("El archivo no está disponible o no coincide con su hash registrado.", 409)
+        return nombre, datos, d["sha256"]
 
     def agente_reportar(self, agente_id: int, iid: int, ok: bool, detalle: str = "") -> dict:
         from .estado import ErrorNegocio

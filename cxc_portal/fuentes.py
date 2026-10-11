@@ -22,6 +22,18 @@ TIPO_VIVA = "EN_VIVO"
 TIPO_SINTETICA = "SINTETICO_DEMO"
 
 
+def es_operable(fuente) -> bool:
+    """La fuente puede alimentar semaforo/reportes/Excel. El marcador `FuenteViva` (sin credencial) NO; un snapshot, una fuente sintetica o
+    una fuente empresarial real/simulada SI. Por compatibilidad, sin el atributo `operable` se asume que una fuente no en vivo lo es."""
+    return fuente is not None and bool(getattr(fuente, "operable", not fuente.en_vivo))
+
+
+def es_operable(fuente) -> bool:
+    """La fuente puede alimentar semaforo/reportes/Excel. El marcador `FuenteViva` (sin credencial) NO; un snapshot, una fuente sintetica o
+    una fuente empresarial real/simulada SI. Por compatibilidad, sin el atributo `operable` se asume que una fuente no en vivo lo es."""
+    return fuente is not None and bool(getattr(fuente, "operable", not fuente.en_vivo))
+
+
 class FuenteNoConfigurada(RuntimeError):
     """La fuente en vivo no esta configurada/autorizada: las funciones que la requieren permanecen bloqueadas."""
 
@@ -94,6 +106,7 @@ class FuenteViva:
 
     tipo = TIPO_VIVA
     en_vivo = True
+    operable = False
     fecha_corte = date.min
     etiqueta = "Fuente en vivo (no configurada)"
 
