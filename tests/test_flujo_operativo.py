@@ -97,14 +97,15 @@ def test_ruta_no_operativa_no_se_prepara_y_se_avisa(env):
         ctx.estado.crear_salida(ACTOR, "VACIA", "2026-10-19")
 
 
-def test_los_candidatos_a_solo_contado_nunca_se_convierten_en_decision_automatica(env):
+def test_el_resultado_contado_es_rojo_automatico_sin_decision_y_solo_la_revision_humana_pide_gerencia(env):
     _, ctx, _ = env
     ctx.flujo.programar_salidas(ACTOR, "DEMO", ["2026-10-19"])
     ctx.flujo.ciclo_diario(hoy="2026-10-15")
     assert ctx.estado.decisiones_vigentes() == {}                                  # ninguna decision creada por el proceso
     pend = [a for a in ctx.estado.listar_alertas(["DEMO"]) if a["tipo"] == "CANDIDATO_PENDIENTE_GERENCIA"]
-    assert {"C90004", "C90005"} <= {a["codigo"] for a in pend} and all(a["severidad"] == "alta" for a in pend)
-    assert ctx.servicio.ruta("DEMO").clientes[3].resultado.final == "CANDIDATO_SOLO_CONTADO"
+    assert {a["codigo"] for a in pend} == {"C90008"} and all(a["severidad"] == "alta" for a in pend)      # solo revision humana
+    c4, c5 = ctx.servicio.ruta("DEMO").clientes[3].resultado, ctx.servicio.ruta("DEMO").clientes[4].resultado
+    assert c4.final == c5.final == "SOLO_CONTADO" and c4.color_final == "ROJO" and not c4.requiere_gerencia           # contado = ROJO sin aprobacion adicional
 
 
 # ------------------------------------------------------------------ evaluaciones por salida, comparacion y alertas de cambio
@@ -113,12 +114,12 @@ def test_cambios_entre_salidas_generan_alertas_y_se_pueden_comparar(env):
     ctx.flujo.programar_salidas(ACTOR, "DEMO", ["2026-10-19", "2026-10-26"])
     ctx.flujo.ciclo_diario(hoy="2026-10-15")
     ger = {"id": None, "usuario": "ger1", "rol": "gerencia", "nombre": "Gerente"}
-    ctx.servicio.registrar_decision(ger, "C90004", "SOLO_CONTADO", "Decisión de gerencia de prueba para el cambio.")
+    ctx.servicio.registrar_decision(ger, "C90004", "C", "Decisión de gerencia de prueba para el cambio.")
     ctx.flujo.ciclo_diario(hoy="2026-10-22")
     s1, s2 = sorted(ctx.estado.listar_salidas("DEMO"), key=lambda s: s["fecha_salida"])
     cmp = ctx.estado.comparar_salidas(s1["id"], s2["id"])
     cam = {c["codigo"]: c for c in cmp["cambios"]}
-    assert cam["C90004"]["antes"] == "CANDIDATO_SOLO_CONTADO" and cam["C90004"]["ahora"] == "SOLO_CONTADO" and cmp["sin_cambio"] >= 7
+    assert cam["C90004"]["antes"] == "SOLO_CONTADO" and cam["C90004"]["ahora"] == "C" and cmp["sin_cambio"] >= 7
     a = [x for x in ctx.estado.listar_alertas(["DEMO"], salida_id=s2["id"]) if x["tipo"] == "CAMBIO_CATEGORIA"]
     assert len(a) == 1 and a[0]["codigo"] == "C90004"
     with pytest.raises(ErrorNegocio, match="misma ruta"):

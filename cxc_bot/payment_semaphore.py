@@ -14,8 +14,9 @@ Reglas (Hub "Cosprobell CxC -- Principal", LEEME del paquete de datos 08-09/10/2
   pagada integramente con recibos; fecha de corte si esta abierta.
 - Entran a la media: pagadas integramente respaldadas por recibos y abiertas con mora > 5 dias. Abiertas con mora <= 5 y
   cierres sin cobro integral acreditado (p. ej. nota de credito) cuentan en la ventana y el historial, no en la media.
-- Media sin redondear, sin predominancia: A <= 5; B > 5 y <= 15; C > 15 y <= 60; > 60 CANDIDATO_SOLO_CONTADO
-  (revision humana obligatoria).
+- Media sin redondear, sin predominancia: A <= 5; B > 5 y <= 15; C > 15 y <= 60; > 60 CONTADO.
+  REGLA VIGENTE desde 2026-10-12: el resultado Contado es ROJO (SOLO_CONTADO) sin aprobacion adicional de gerencia
+  (`CONTADO_AUTOMATICO`; antes era CANDIDATO_SOLO_CONTADO con revision humana obligatoria).
 - Alerta independiente por cada factura evaluada con mora > 60, aunque la media del cliente sea mejor. Se SEPARAN:
   abiertas = alertas OPERATIVAS DE COBRO (hay saldo pendiente); pagadas = alertas HISTORICAS DE COMPORTAMIENTO (ya
   cobradas: nunca son cobro pendiente).
@@ -50,6 +51,12 @@ REVISION_HUMANA = "REVISION_HUMANA"
 # Solo por decision de gerencia
 SOLO_CONTADO = "SOLO_CONTADO"
 SIN_DATOS = "SIN_DATOS"
+
+# REGLA VIGENTE (Alejandro, 2026-10-12): el sistema determina la clasificacion; si el resultado es Contado (media > 60 dias), corresponde ROJO
+# (SOLO_CONTADO) SIN aprobacion adicional de gerencia. Esta regla sustituye a la anterior ("candidato pendiente de decision"). Una decision
+# explicita de gerencia sigue pudiendo sustituir cualquier resultado. Para volver a la regla anterior basta poner este valor en False
+# (o pasar `contado_automatico=False`): el motor es unico y esta es la unica bifurcacion.
+CONTADO_AUTOMATICO = True
 
 COLOR = {
     A: "VERDE", B: "AZUL", C: "AMARILLO", SOLO_CONTADO: "ROJO", EN_PRUEBA: "BLANCO",
@@ -202,14 +209,14 @@ class ResultadoCliente:
         }
 
 
-def clasificar_media(promedio: float) -> str:
+def clasificar_media(promedio: float, contado_automatico: Optional[bool] = None) -> str:
     if promedio <= TOLERANCIA_A:
         return A
     if promedio <= LIMITE_B:
         return B
     if promedio <= LIMITE_C:
         return C
-    return CANDIDATO_SOLO_CONTADO
+    return SOLO_CONTADO if (CONTADO_AUTOMATICO if contado_automatico is None else contado_automatico) else CANDIDATO_SOLO_CONTADO
 
 
 def _numero_orden(f: FacturaSAP):
@@ -269,6 +276,7 @@ def evaluar_cliente(
     fecha_corte: date,
     plazo_dias: int,
     decision: Optional[DecisionGerencia] = None,
+    contado_automatico: Optional[bool] = None,
 ) -> ResultadoCliente:
     todas = list(facturas)
     historial = len(todas)
@@ -296,13 +304,15 @@ def evaluar_cliente(
             expl.append("Ninguna factura de la ventana aporta a la media: revisión humana.")
         else:
             promedio = sum(moras) / len(moras)
-            calculado = clasificar_media(promedio)
+            calculado = clasificar_media(promedio, contado_automatico)
             expl.append(f"Mora media {promedio:.2f} días sobre {len(moras)} factura(s) evaluables (plazo {plazo_dias} días desde la emisión, mora ≥ 0, sin redondear).")
-            expl.append(f"Umbrales: A ≤ {TOLERANCIA_A}, B ≤ {LIMITE_B}, C ≤ {LIMITE_C}, > {LIMITE_C} candidato a solo contado.")
+            expl.append(f"Umbrales: A ≤ {TOLERANCIA_A}, B ≤ {LIMITE_B}, C ≤ {LIMITE_C}, > {LIMITE_C} contado.")
         fuera = len(ev) - len(moras)
         if fuera:
             expl.append(f"{fuera} factura(s) de la ventana no cuentan para la media (abiertas con 0-5 días o cierres sin cobro íntegro acreditado).")
-    if calculado == CANDIDATO_SOLO_CONTADO:
+    if calculado == SOLO_CONTADO:
+        expl.append("Resultado automático: contado → viñeta ROJA (regla vigente: no requiere aprobación adicional de gerencia).")
+    elif calculado == CANDIDATO_SOLO_CONTADO:
         expl.append("Es una PROPUESTA: la viñeta roja / solo contado requiere decisión de gerencia.")
     final = calculado
     if decision is not None:
@@ -330,9 +340,10 @@ def evaluar_ruta(
     fuente: PaymentEvidenceSource,
     plazo_dias: int,
     decisiones: Optional[Dict[str, DecisionGerencia]] = None,
+    contado_automatico: Optional[bool] = None,
 ) -> Dict[str, ResultadoCliente]:
     """Evalua todos los clientes de una ruta con el mismo motor. Un cliente sin facturas queda EN_PRUEBA (0 en historial)."""
     cods = [c.strip().upper() for c in codigos]
     facturas = fuente.facturas_por_cliente(cods)
     dec = {k.strip().upper(): v for k, v in (decisiones or {}).items()}
-    return {c: evaluar_cliente(c, facturas.get(c, []), fuente.fecha_corte, plazo_dias, dec.get(c)) for c in cods}
+    return {c: evaluar_cliente(c, facturas.get(c, []), fuente.fecha_corte, plazo_dias, dec.get(c), contado_automatico) for c in cods}

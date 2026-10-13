@@ -30,8 +30,9 @@ def env(tmp_path):
                             clientes=[{"codigo": "C90001", "folder": "1 LV", "nombre": "SALON DEMO EXCELENTE (A)"},
                                       {"codigo": "C90002", "folder": "2 LV", "nombre": "SALON DEMO BUENO (B)"},
                                       {"codigo": "C90003", "folder": "1 PB", "nombre": "SALON DEMO REGULAR (C)"},
-                                      {"codigo": "C90004", "folder": "2 PB", "nombre": "SALON DEMO CANDIDATO A SOLO CONTADO"}], requiere_hojas_visita=True)
-    ctx.estado.registrar_documento(ACTOR, "LAS_VEGAS", "HOJA_VISITA", "hojas.xlsx", HOJA, {"hojas": [], "total_clientes": 4}, tmp_path / "estado" / "documentos")
+                                      {"codigo": "C90004", "folder": "2 PB", "nombre": "SALON DEMO CANDIDATO A SOLO CONTADO"},
+                                      {"codigo": "C90008", "folder": "3 PB", "nombre": "SALON DEMO SIN BASE PARA LA MEDIA"}], requiere_hojas_visita=True)
+    ctx.estado.registrar_documento(ACTOR, "LAS_VEGAS", "HOJA_VISITA", "hojas.xlsx", HOJA, {"hojas": [], "total_clientes": 5}, tmp_path / "estado" / "documentos")
     (tmp_path / "datos" / "01_Rutas").mkdir(parents=True)
     shutil.copy2(FIXTURE, tmp_path / "datos" / "01_Rutas" / "base.xlsx")
     hoy = {"d": date(2026, 10, 12)}
@@ -80,9 +81,11 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     rep = sal["reporte_excepciones"]
     assert sal["estado"] == "preparada" and rep["total_excepciones"] > 0 and rep["pendientes_gerencia"]
     assert ctx.estado.decisiones_vigentes() == {}
+    c4 = next(c for c in ctx.servicio.ruta("LAS_VEGAS").clientes if c.codigo == "C90004").resultado
+    assert c4.final == "SOLO_CONTADO" and c4.color_final == "ROJO" and not c4.requiere_gerencia            # contado = rojo automatico, sin decision
     tipos = {a["tipo"] for a in ger.get(f"/api/avisos?salida={sid1}")[2]["avisos"]}
     assert {"CANDIDATO_PENDIENTE_GERENCIA", "DATOS_NO_VIVOS"} <= tipos
-    paso(f"Evaluación persistida: {rep['total_excepciones']} excepción(es); avisos {sorted(tipos)}; 0 decisiones automáticas")
+    paso(f"Evaluación persistida: {rep['total_excepciones']} excepción(es); avisos {sorted(tipos)}; C90004 es ROJO automático (contado) sin decisión; solo C90008 (revisión humana) espera a gerencia")
 
     # 4. gestion por excepcion: el borrador siempre se genera; sin fuente validada NO se publica normal
     st, _, e1 = ger.post(f"/api/salidas/{sid1}/excel", {"base": "base.xlsx"})
@@ -115,14 +118,14 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     seg = ger.get(f"/api/salidas/{sid1}")[2]["seguimiento"]
     assert seg["totales"]["visitados"] == 3 and seg["totales"]["cobro_declarado"] == 3600 and seg["totales"]["venta_declarada"] == 4100
     assert ven.post("/api/visitas", {"ruta": "LAS_VEGAS", "fecha_salida": "2026-10-20", "codigo": "C90004", "estado": "no_visitada", "motivo": "x", "cobro": 5})[0] == 400
-    paso("Seguimiento: 3/4 visitados, cobro declarado L 3,600, venta declarada L 4,100; sin firma ≠ no visita; no visita con cobro rechazada")
+    paso("Seguimiento: 3 de 5 clientes visitados, cobro declarado L 3,600, venta declarada L 4,100; sin firma ≠ no visita; no visita con cobro rechazada")
     ger.post(f"/api/salidas/{sid1}/estado", {"estado": "cerrada"})
 
     # 7. gerencia decide (explicitamente) y se confirma un cliente nuevo
-    st, _, d = ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Decisión de gerencia sintética tras la salida 1."})
+    st, _, d = ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "C", "motivo": "Decisión de gerencia sintética tras la salida 1."})
     assert st == 201 and d["actor"]
     assert ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90005", "SALON DEMO CANDIDATO CON ALERTA PAGADA", "LV")["folder"] == "3 LV"
-    paso("Gerencia decide C90004 → SOLO_CONTADO (con motivo y autor); se confirma el cliente nuevo C90005 con folder permanente 3 LV")
+    paso("Gerencia resuelve la revisión humana de C90008 → C (con motivo y autor); se confirma el cliente nuevo C90005 con folder permanente 3 LV")
 
     # 8. segunda salida: cambios, alertas, comparacion y Excel v2 / historico
     hoy["d"] = date(2026, 10, 23)
@@ -133,20 +136,20 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     assert "CAMBIO_CATEGORIA" in tipos2 and "CLIENTE_NUEVO" in tipos2
     cmp = ger.get(f"/api/comparar-salidas?a={sid1}&b={sid2}")[2]
     camb = {c["codigo"]: c for c in cmp["cambios"]}
-    assert camb["C90004"]["antes"] == "CANDIDATO_SOLO_CONTADO" and camb["C90004"]["ahora"] == "SOLO_CONTADO" and camb["C90005"]["tipo"] == "NUEVO"
+    assert camb["C90008"]["antes"] == "REVISION_HUMANA" and camb["C90008"]["ahora"] == "C" and camb["C90005"]["tipo"] == "NUEVO"
     paso(f"Salida 2 preparada el 23/10: avisos {sorted(tipos2)}; comparación con la salida 1: {len(cmp['cambios'])} cambio(s)")
     st, _, e2 = ger.post(f"/api/salidas/{sid2}/excel", {"base": "base.xlsx"})
-    assert st == 201 and e2["version"] == 2 and e2["clientes"] == 5
+    assert st == 201 and e2["version"] == 2 and e2["clientes"] == 6
     vers = {v["version"]: v for v in ger.get("/api/rutas/LAS_VEGAS/excel")[2]["versiones"]}
     assert vers[1]["estado"] == "HISTORICO" and vers[2]["estado"] == "BORRADOR"
     assert hashlib.sha256((ctx.estado.carpeta_excel / vers[1]["archivo"]).read_bytes()).hexdigest() == e1["sha256"]
     assert ger.get("/api/rutas/LAS_VEGAS/excel")[2]["integridad"] == []
-    paso("Excel v2 (5 clientes) como borrador vigente; el borrador v1 pasó a Histórico con contenido idéntico (hash verificado)")
+    paso("Excel v2 (6 clientes) como borrador vigente; el borrador v1 pasó a Histórico con contenido idéntico (hash verificado)")
 
     # 9. dashboard, notificaciones simuladas y permisos
     d = ger.get("/api/dashboard")[2]
     fila = next(x for x in d["por_ruta"] if x["ruta"] == "LAS_VEGAS")
-    assert fila["clientes"] == 5 and d["alertas"]["abiertas"] > 0 and any(c["salida"] == sid1 and c["visitados"] == 3 for c in d["cumplimiento"])
+    assert fila["clientes"] == 6 and d["alertas"]["abiertas"] > 0 and any(c["salida"] == sid1 and c["visitados"] == 3 for c in d["cumplimiento"])
     assert ven.get("/api/dashboard")[0] == 403 and "core" not in ven.get("/api/dashboard/mio")[2]
     nots = ger.get("/api/notificaciones")[2]["notificaciones"]
     assert nots and all(n["estado"] == "simulado" for n in nots) and {n["tipo"] for n in nots} >= {"SALIDA_PREPARADA", "RESUMEN_SEMANAL"}
@@ -167,6 +170,6 @@ def test_salida_completa_simulada_de_extremo_a_extremo(env):
     rc.restaurar_cifrado(f, priv, "contrasena-de-prueba-123", nuevo)
     r = Estado(nuevo)
     assert r.verificar_documentos() == [] and len(r.listar_excel("LAS_VEGAS")) == 2 and len(r.listar_salidas("LAS_VEGAS")) == 2
-    assert r.decisiones_vigentes()["C90004"]["clasificacion_final"] == "SOLO_CONTADO"
+    assert r.decisiones_vigentes()["C90008"]["clasificacion_final"] == "C"
     paso("Respaldo cifrado + restauración en carpeta nueva: salidas, 2 versiones de Excel, hojas y decisión íntegras")
     print(f"\nRESULTADO: {len(PASOS)} pasos verificados.")

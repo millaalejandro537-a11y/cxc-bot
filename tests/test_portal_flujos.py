@@ -29,13 +29,13 @@ def test_decision_de_gerencia_conserva_calculo_y_se_audita(env):
     s, ctx, _ = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
     antes = _clientes(ger)["C90004"]["semaforo"]
-    assert antes["final"] == "CANDIDATO_SOLO_CONTADO" and antes["decision_gerencia"] is None
-    st, _, d = ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Gerencia aprueba solo contado (prueba)."})
-    assert st == 201 and d["calculado_al_decidir"] == "CANDIDATO_SOLO_CONTADO" and d["actor"] == "Gerente Uno" and d["estado"] == "vigente"
+    assert antes["final"] == "SOLO_CONTADO" and antes["color_final"] == "ROJO" and antes["decision_gerencia"] is None          # contado = rojo automatico
+    st, _, d = ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Gerencia sustituye el resultado automático (prueba)."})
+    assert st == 201 and d["calculado_al_decidir"] == "SOLO_CONTADO" and d["actor"] == "Gerente Uno" and d["estado"] == "vigente"
     des = _clientes(ger)["C90004"]["semaforo"]
-    assert des["calculado"] == "CANDIDATO_SOLO_CONTADO" and des["final"] == "SOLO_CONTADO" and des["color_final"] == "ROJO"
+    assert des["calculado"] == "SOLO_CONTADO" and des["final"] == "C" and des["color_final"] == "AMARILLO"
     assert des["promedio_mora"] == antes["promedio_mora"]  # el calculo automatico no cambia
-    assert ger.get("/api/clientes/C90004")[2]["historial_decisiones"][0]["motivo"].startswith("Gerencia aprueba")
+    assert ger.get("/api/clientes/C90004")[2]["historial_decisiones"][0]["motivo"].startswith("Gerencia sustituye")
     assert any(e["accion"] == "decision.registrar" and e["referencia"] == "C90004" for e in ctx.estado.listar_auditoria())
 
 
@@ -43,12 +43,12 @@ def test_nueva_decision_sustituye_y_anular_vuelve_al_automatico(env):
     s, _, _ = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
     ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Primera decisión de prueba."})
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Segunda decisión de prueba."})
+    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "B", "motivo": "Segunda decisión de prueba."})
     hist = ger.get("/api/decisiones?codigo=C90004")[2]["decisiones"]
     assert [h["estado"] for h in hist] == ["vigente", "sustituida"]  # nunca se borra el historial
     assert ger.post("/api/decisiones/anular", {"codigo": "C90004", "motivo": "corta"})[0] == 400
     assert ger.post("/api/decisiones/anular", {"codigo": "C90004", "motivo": "Se anula por error de captura."})[0] == 200
-    assert _clientes(ger)["C90004"]["semaforo"]["final"] == "CANDIDATO_SOLO_CONTADO"  # vuelve al calculo automatico
+    assert _clientes(ger)["C90004"]["semaforo"]["final"] == "SOLO_CONTADO"  # vuelve al calculo automatico
     assert [h["estado"] for h in ger.get("/api/decisiones?codigo=C90004")[2]["decisiones"]] == ["anulada", "sustituida"]
 
 

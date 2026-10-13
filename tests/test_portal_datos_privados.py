@@ -134,7 +134,7 @@ def test_distribuciones_finales_y_decisiones(entorno):
         for c in ger.get(f"/api/rutas/{rid}/clientes")[2]["clientes"]:
             sem = c["semaforo"]
             if sem["decision_gerencia"]:
-                assert sem["calculado"] == "CANDIDATO_SOLO_CONTADO" and sem["promedio_mora"] > ps.LIMITE_C  # el calculo automatico se conserva
+                assert sem["calculado"] == "SOLO_CONTADO" and sem["promedio_mora"] > ps.LIMITE_C  # el calculo automatico (contado) se conserva
 
 
 def test_saldos_son_las_facturas_abiertas_de_la_consulta_1_y_coinciden_con_la_lista_de_ruta(entorno):

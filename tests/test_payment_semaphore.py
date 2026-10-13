@@ -33,9 +33,13 @@ def test_historial_cuenta_pagadas_y_abiertas():
     assert r.calculado != ps.EN_PRUEBA and r.historial_total == 4
 
 
-@pytest.mark.parametrize("mora,esperado", [(0, "A"), (5, "A"), (6, "B"), (15, "B"), (16, "C"), (60, "C"), (61, ps.CANDIDATO_SOLO_CONTADO)])
+@pytest.mark.parametrize("mora,esperado", [(0, "A"), (5, "A"), (6, "B"), (15, "B"), (16, "C"), (60, "C"), (61, ps.SOLO_CONTADO)])
 def test_umbrales(mora, esperado):
     assert ev(serie([mora] * 4)).calculado == esperado
+
+
+def test_umbral_de_contado_con_la_regla_anterior_sigue_disponible_como_candidato():
+    assert ps.clasificar_media(61, contado_automatico=False) == ps.CANDIDATO_SOLO_CONTADO and ps.clasificar_media(61) == ps.SOLO_CONTADO
 
 
 def test_media_no_se_redondea():
@@ -100,18 +104,25 @@ def test_sin_base_para_la_media_va_a_revision_humana():
     assert r.calculado == ps.REVISION_HUMANA and r.requiere_gerencia
 
 
-def test_candidato_no_es_rojo_y_requiere_gerencia():
+def test_contado_es_rojo_automatico_sin_aprobacion_adicional_de_gerencia():
+    """Regla vigente (2026-10-12): el sistema determina; si el resultado es Contado corresponde ROJO sin aprobacion adicional."""
     r = ev(serie([90] * 5))
+    assert r.calculado == r.final == ps.SOLO_CONTADO and r.color_final == "ROJO" and not r.requiere_gerencia and r.decision_gerencia is None
+    assert any("ROJA" in e and "no requiere aprobación adicional" in e for e in r.explicacion)
+
+
+def test_regla_anterior_candidato_pendiente_de_gerencia_sigue_disponible_por_parametro():
+    r = ps.evaluar_cliente("C1", serie([90] * 5), CORTE, 60, None, contado_automatico=False)
     assert r.final == ps.CANDIDATO_SOLO_CONTADO and r.color_final == "PENDIENTE_GERENCIA" and r.requiere_gerencia
 
 
 def test_override_conserva_calculo_automatico_y_traza():
     dec = ps.DecisionGerencia("C", "Mal cobro de un vendedor anterior.", "Gerencia", "2026-10-09")
     r = ev(serie([120] * 5), dec=dec)
-    assert r.calculado == ps.CANDIDATO_SOLO_CONTADO and r.promedio_mora == 120.0 and r.alertas
+    assert r.calculado == ps.SOLO_CONTADO and r.promedio_mora == 120.0 and r.alertas
     assert r.final == "C" and r.color_final == "AMARILLO" and r.decision_gerencia.fecha == "2026-10-09"
     d = r.to_dict()
-    assert d["calculado"] == "CANDIDATO_SOLO_CONTADO" and d["decision_gerencia"]["actor"] == "Gerencia"
+    assert d["calculado"] == "SOLO_CONTADO" and d["decision_gerencia"]["actor"] == "Gerencia"
 
 
 def test_alerta_mayor_60_aunque_la_media_sea_buena():
@@ -152,9 +163,10 @@ class _Fuente:
 
 def test_evaluar_ruta_usa_el_mismo_motor_y_aplica_decisiones():
     fuente = _Fuente({"C1": serie([90] * 5), "C2": serie([0] * 4)})
-    dec = {"c1": ps.DecisionGerencia(ps.SOLO_CONTADO, "aprobado", "Gerencia", "2026-10-10")}
+    dec = {"c1": ps.DecisionGerencia("C", "Decisión de gerencia que sustituye al automático", "Gerencia", "2026-10-10")}
     res = ps.evaluar_ruta(["C1", "C2", "C3"], fuente, 60, dec)
-    assert res["C1"].calculado == ps.CANDIDATO_SOLO_CONTADO and res["C1"].final == ps.SOLO_CONTADO and res["C1"].color_final == "ROJO"
+    assert res["C1"].calculado == ps.SOLO_CONTADO and res["C1"].final == "C" and res["C1"].color_final == "AMARILLO"
+    assert ps.evaluar_ruta(["C1"], fuente, 60)["C1"].color_final == "ROJO"          # sin decision: el contado es rojo automaticamente
     assert res["C2"].final == "A" and res["C3"].final == ps.EN_PRUEBA
 
 

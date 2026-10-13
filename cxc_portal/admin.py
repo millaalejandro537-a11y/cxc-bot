@@ -12,10 +12,12 @@ La clave se pide por teclado (no queda en el historial) o, con --generar-clave, 
 from __future__ import annotations
 
 import argparse
+import json
 import getpass
 import os
 import stat
 from pathlib import Path
+from typing import Optional
 
 from . import security as sec
 from .estado import ErrorNegocio, Estado
@@ -65,8 +67,13 @@ def cmd_usuarios(a) -> int:
     return 0
 
 
+def _estado_lectura(a) -> Estado:
+    """Respaldar nunca necesita escribir: se abre en solo lectura para no migrar ni tocar una BD real."""
+    return Estado(Path(a.estado) / "portal.sqlite3", solo_lectura=True)
+
+
 def cmd_respaldar(a) -> int:
-    destino = _estado(a).respaldar(Path(a.destino), a.conservar)
+    destino = _estado_lectura(a).respaldar(Path(a.destino), a.conservar)
     print(f"Respaldo verificado: {destino} (+ .sha256)")
     return 0
 
@@ -124,6 +131,8 @@ def cmd_importar_documento(a) -> int:
     except ErrorNegocio as e:
         raise SystemExit(f"Error: {e.mensaje}")
     print(f"Documento v{d['version']} registrado ({d['contenido']['total_clientes']} clientes, {len(d['contenido']['hojas'])} hojas, sha256 {d['sha256'][:16]}…).")
+    for adv in d["contenido"].get("advertencias", []):
+        print(f"  ADVERTENCIA: {adv}")
     return 0
 
 
@@ -178,7 +187,7 @@ def cmd_generar_claves_respaldo(a) -> int:
 def cmd_respaldar_cifrado(a) -> int:
     from . import respaldo_cifrado as rc
     try:
-        r = rc.ejecutar_ciclo(_estado(a), [_leer(p) for p in a.publica], Path(a.destino), a.diarios, a.mensuales)
+        r = rc.ejecutar_ciclo(_estado_lectura(a), [_leer(p) for p in a.publica], Path(a.destino), a.diarios, a.mensuales)
     except ErrorNegocio as e:
         raise SystemExit(f"Error: {e.mensaje}")
     print(f"Respaldo cifrado: {r['archivo']} ({r['bytes']} bytes, destinatarios {', '.join(r['destinatarios'])}); rotados: {len(r['rotados'])}.")
@@ -217,6 +226,67 @@ def cmd_ciclo_diario(a) -> int:
     print(f"Ciclo {r['fecha']}: preparadas {len(r['preparadas'])}, atrasadas {len(r['atrasadas'])}, errores {len(r['errores'])}, "
           f"ya preparadas {r['ya_preparadas']}, futuras {r['futuras']}; notificaciones simuladas {r['notificaciones']['simulado']}.")
     return 1 if r["errores"] else 0
+
+
+def _pares(texto: str, sep: str) -> dict:
+    out = {}
+    for p in [x.strip() for x in (texto or "").split(sep) if x.strip()]:
+        k, _, v = p.partition("=")
+        if not v:
+            raise SystemExit(f"Formato inválido '{p}': use CLAVE=VALOR.")
+        out[k.strip().upper()] = v.strip()
+    return out
+
+
+def cmd_generar_json_ruta(a) -> int:
+    from .migrar_ruta import construir_json
+    try:
+        d = construir_json(Path(a.xlsx), Path(a.base_json), _pares(a.renombres, ","), _pares(a.zonas_nuevas, ";"), a.vendedor)
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    destino = Path(a.salida)
+    if destino.exists():
+        raise SystemExit("El archivo de salida ya existe: no se sobrescribe.")
+    destino.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"JSON escrito en {destino}: {d['route_customer_count']} clientes, {d['zone_count']} zonas.")
+    return 0
+
+
+def _respaldo_valido(archivo: Optional[Path]) -> None:
+    import hashlib
+    import sqlite3
+    if archivo is None:
+        raise SystemExit("Para aplicar se exige un respaldo verificado (--respaldo, creado por 'respaldar').")
+    suma = archivo.with_name(archivo.name + ".sha256")
+    if not archivo.is_file() or not suma.is_file():
+        raise SystemExit("Para aplicar se exige un respaldo verificado (archivo y .sha256 creados por 'respaldar').")
+    if hashlib.sha256(archivo.read_bytes()).hexdigest() != suma.read_text(encoding="utf-8").split()[0]:
+        raise SystemExit("La suma SHA-256 del respaldo no coincide.")
+    con = sqlite3.connect(archivo)
+    try:
+        if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise SystemExit("El respaldo no pasa la comprobación de integridad.")
+    finally:
+        con.close()
+
+
+def cmd_migrar_ruta(a) -> int:
+    from .integrar_ruta import ConflictoIntegracion
+    from .migrar_ruta import aplicar, planificar
+    try:
+        if a.aplicar:
+            _respaldo_valido(Path(a.respaldo) if a.respaldo else None)
+            r = aplicar(_estado(a), ACTOR, Path(a.archivo), a.ruta.upper())
+        else:   # ensayo: la BD se abre en solo lectura (no crea tablas ni toca nada)
+            r = planificar(Estado(Path(a.estado) / "portal.sqlite3", solo_lectura=True), Path(a.archivo), a.ruta.upper())
+    except ConflictoIntegracion as e:
+        raise SystemExit("CONFLICTO (no se escribió nada):\n  - " + "\n  - ".join(e.conflictos))
+    except ErrorNegocio as e:
+        raise SystemExit(f"Error: {e.mensaje}")
+    print(json.dumps(r, ensure_ascii=False, indent=1, default=str))
+    if not a.aplicar:
+        print("Ensayo de solo lectura: sin cambios. Para aplicar: --aplicar --respaldo <respaldo verificado>.")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -275,6 +345,21 @@ def main(argv=None) -> int:
     p.add_argument("--archivo", required=True)
     p.add_argument("--privada", required=True)
     p.set_defaults(func=cmd_verificar_respaldo)
+    p = sub.add_parser("generar-json-ruta")
+    p.add_argument("--xlsx", required=True, help="Excel operativo de la ruta (Hoja1: #, Codigo, NOMBRE DEL CLIENTE)")
+    p.add_argument("--base-json", required=True, help="JSON aprobado anterior (nombres de zona de los prefijos existentes)")
+    p.add_argument("--renombres", default="", help="Prefijos renombrados: LL=LO,D=DN")
+    p.add_argument("--zonas-nuevas", default="", help="Zonas nuevas: SJ=San Juan, Intibucá (separe varias con ;)")
+    p.add_argument("--vendedor")
+    p.add_argument("--salida", required=True)
+    p.set_defaults(func=cmd_generar_json_ruta)
+    p = sub.add_parser("migrar-ruta")
+    p.add_argument("--estado", required=True)
+    p.add_argument("--ruta", required=True)
+    p.add_argument("--archivo", required=True)
+    p.add_argument("--aplicar", action="store_true", help="Sin esta bandera solo ensaya (BD en solo lectura)")
+    p.add_argument("--respaldo", help="Respaldo verificado (.sqlite3 con .sha256) OBLIGATORIO con --aplicar")
+    p.set_defaults(func=cmd_migrar_ruta)
     p = sub.add_parser("ciclo-diario")
     p.add_argument("--estado", required=True)
     p.add_argument("--datos")

@@ -64,7 +64,7 @@ def test_sin_excepciones_y_con_fuente_validada_se_publica_normal_sin_pedir_revis
 def test_con_excepciones_que_requieren_decision_queda_borrador_y_se_pide_revision_solo_a_gerencia(env):
     s, ctx, _ = env
     _validar_fuente(ctx)
-    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90004", "SALON DEMO CANDIDATO A SOLO CONTADO", "LV")      # candidato pendiente de decision
+    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90008", "SALON DEMO SIN BASE PARA LA MEDIA", "LV")      # revision humana pendiente (el contado ya es rojo automatico)
     sid = _salida(ctx)
     sal = ctx.flujo.preparar(ACTOR, sid)
     assert sal["reporte_excepciones"]["bloqueantes"]["requieren_revision_gerencia"] == 1
@@ -82,7 +82,7 @@ def test_con_excepciones_que_requieren_decision_queda_borrador_y_se_pide_revisio
 def test_la_revision_de_gerencia_promueve_el_mismo_borrador_a_actual_sin_crear_version(env):
     s, ctx, _ = env
     _validar_fuente(ctx)
-    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90004", "SALON DEMO CANDIDATO A SOLO CONTADO", "LV")
+    ctx.estado.agregar_cliente(ACTOR, "LAS_VEGAS", "C90008", "SALON DEMO SIN BASE PARA LA MEDIA", "LV")
     sid = _salida(ctx)
     ctx.flujo.preparar(ACTOR, sid)
     borrador = ctx.flujo.generar_excel_salida(ACTOR, sid, "base.xlsx")

@@ -20,7 +20,7 @@ Ya existían y **no se reconstruyeron**: semáforo único (`cxc_bot/payment_sema
 | Decisiones, motivos, responsables, fechas, historial | **Ya existía** | `decisiones` |
 | Evaluaciones por salida persistidas y comparables | **Terminado** | `salida_resumen` + `GET /api/comparar-salidas` |
 | Alertas de cambio de categoría, mora y sin evidencia | **Terminado** (mora: +5 días o más entre salidas, **aprobado y configurable**) | `flujo.generar_alertas`; parámetro `umbral_aumento_mora_dias` (`/api/configuracion`) |
-| Candidatos a solo contado nunca se convierten en decisión | **Terminado y probado** | alerta "pendiente de gerencia"; las pruebas verifican 0 decisiones automáticas |
+| Resultado Contado (media > 60 d) | **Regla vigente desde 2026-10-12: ROJO automático, sin aprobación adicional de gerencia** (sustituye a “candidato pendiente”; reversible con `CONTADO_AUTOMATICO`) | `payment_semaphore`; una decisión explícita de gerencia sigue pudiendo sustituir el resultado |
 | Hojas de visita v1 (Occidente: 8 hojas) y vínculo por salida | **Ya existía** | `documentos`, `salida_documentos` |
 | Seguimiento de visitas, **cobros y ventas** | **Terminado** | columnas `cobro`/`venta` (montos declarados en campo, no de SAP); totales por salida |
 | Alerta por 3 salidas consecutivas con visita confirmada como no realizada | **Terminado** | aviso `OMISION_3_SALIDAS`; la falta de firma NO cuenta |
@@ -52,7 +52,7 @@ Ya existían y **no se reconstruyeron**: semáforo único (`cxc_bot/payment_sema
    - La salida y el borrador se preparan siempre, solos.
    - **Publicación normal** (Excel en `Actual/`): fuente validada y vigente (`apta_para_publicar`) y sin excepciones que requieran decisión.
    - Si no se cumple, el Excel queda como **BORRADOR** en `Borrador/` con sus motivos; **no desplaza** a la versión publicada; repetirlo no crea versiones; cuando ya puede publicarse, **el mismo borrador se promueve** a Actual.
-   - **Requieren revisión de gerencia** (únicamente estas): clientes candidatos a solo contado/revisión humana pendientes de decisión y clientes sin evidencia suficiente. La revisión debe ser de rol **gerencia** (la de un administrador no la sustituye). Se pide solo a gerencia (aviso `REVISION_GERENCIA_REQUERIDA` + notificación simulada).
+   - **Requieren revisión de gerencia** (únicamente estas): clientes en **revisión humana** (sin base para la media) y clientes sin evidencia suficiente. *(Desde el 12/10 el resultado Contado ya no requiere aprobación: es ROJO automático.)* La revisión debe ser de rol **gerencia** (la de un administrador no la sustituye). Se pide solo a gerencia (aviso `REVISION_GERENCIA_REQUERIDA` + notificación simulada).
    - **Se resuelven decidiendo, no revisando:** clientes propuestos sin confirmar/rechazar (el roster no está cerrado).
    - **Informativas (no bloquean ni piden revisión):** alertas de cobro en mora, cambios de categoría, clientes nuevos/retirados, omisiones, datos no vivos.
 Pendiente de definir con Alejandro: la frescura aceptable de la fuente real (el adaptador usa 2 días por defecto).

@@ -47,6 +47,12 @@ def clase_desde_etiqueta(texto: str) -> str:
     return ps.SIN_DATOS
 
 
+def a_regla_vigente(clase: str) -> str:
+    """Los Excel aprobados al 09/10 rotulan 'Candidato a solo contado' (pendiente de gerencia). Con la regla vigente desde 2026-10-12 el resultado Contado
+    es ROJO sin aprobacion adicional: se lee con la regla vigente para que el oraculo y el motor hablen el mismo idioma."""
+    return ps.SOLO_CONTADO if (clase == ps.CANDIDATO_SOLO_CONTADO and ps.CONTADO_AUTOMATICO) else clase
+
+
 @dataclass
 class FilaAprobada:
     folder: str
@@ -166,6 +172,7 @@ def leer_aprobado(path: Path, zona_por_prefijo: Optional[Dict[str, str]] = None)
             f.motivo_gerencia = _limpiar(dec)
     # La hoja de LV marca la excepcion en la etiqueta final ("... - gerencia"): su calculado viene en la hoja 2 sin override.
     for f in out.values():
+        f.calculado, f.final = a_regla_vigente(f.calculado), a_regla_vigente(f.final)
         if f.final == ps.SIN_DATOS:
             f.final = f.calculado
         # override = la clasificacion final difiere de la calculada por una decision de gerencia

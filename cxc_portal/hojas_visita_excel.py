@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 
 import openpyxl
 
-COLORES = {"VERDE", "AMARILLA", "AZUL", "BLANCA", "CANDIDATO", "REVISAR", "ROJA"}
+COLORES = {"VERDE", "AMARILLA", "AZUL", "BLANCA", "CANDIDATO", "REVISAR", "ROJA", "ROJO"}   # ROJO = solo contado (resultado del sistema, regla vigente desde 2026-10-12)
 _CODIGO = re.compile(r"^C\d{3,8}$")
 
 
@@ -46,8 +46,10 @@ def leer_hojas_visita(path: Path) -> Dict[str, Any]:
             if not r or r[0] is None:
                 continue
             color, codigo = _n(r[0]), str(r[1] or "").strip().upper()
-            if color not in COLORES or not _CODIGO.match(codigo):
+            if not _CODIGO.match(codigo):
                 break  # pie del documento (resumen, firmas)
+            if color not in COLORES:   # un color nuevo NUNCA corta la lectura en silencio: el cliente se conserva y se advierte
+                advertencias.append(f"{codigo} ({ws.title}): color '{color}' no reconocido; se conserva tal como figura.")
             orden += 1
             nombre = str(r[2] or "").strip()
             if codigo in vistos:
@@ -61,4 +63,4 @@ def leer_hojas_visita(path: Path) -> Dict[str, Any]:
         for c in h["clientes"]:
             colores[c["color_documento"]] = colores.get(c["color_documento"], 0) + 1
     return {"hojas": hojas, "total_clientes": total, "colores": colores, "advertencias": advertencias,
-            "nota_colores": "Colores PRELIMINARES del documento. 'CANDIDATO' = candidato a solo contado (rojo claro), no es una decisión aprobada por gerencia."}
+            "nota_colores": "Colores PRELIMINARES del documento (clasificación sobre datos históricos del corte, no saldos vigentes). 'ROJO' = solo contado según el resultado del sistema (regla vigente); 'CANDIDATO' (versiones anteriores) = candidato pendiente de gerencia."}

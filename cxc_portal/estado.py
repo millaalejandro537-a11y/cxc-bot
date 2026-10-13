@@ -94,10 +94,15 @@ def iso(d: datetime) -> str:
 class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
     """Acceso a la BD propia. Una conexion por llamada (hilos seguros); WAL; claves foraneas activas."""
 
-    def __init__(self, ruta: Path, reloj=ahora):
+    def __init__(self, ruta: Path, reloj=ahora, solo_lectura: bool = False):
         self.ruta = Path(ruta)
         self.reloj = reloj
+        self.solo_lectura = solo_lectura   # abre la BD en modo lectura: no crea tablas, no migra, no activa WAL (para inspeccionar una BD real sin tocarla)
         self._lock = threading.Lock()
+        if solo_lectura:
+            if not self.ruta.is_file():
+                raise ErrorNegocio(f"No existe la BD {self.ruta}.", 404)
+            return
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         with self.tx() as c:
             c.executescript(DDL)
@@ -126,10 +131,14 @@ class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
 
     @contextmanager
     def tx(self):
-        con = sqlite3.connect(self.ruta, timeout=15)
+        if self.solo_lectura:
+            con = sqlite3.connect(f"file:{self.ruta.resolve().as_posix()}?mode=ro", uri=True, timeout=15)
+        else:
+            con = sqlite3.connect(self.ruta, timeout=15)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
-        con.execute("PRAGMA journal_mode = WAL")
+        if not self.solo_lectura:
+            con.execute("PRAGMA journal_mode = WAL")
         try:
             with self._lock:
                 yield con
@@ -380,6 +389,8 @@ class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
                 raise ErrorNegocio("Ruta no encontrada.", 404)
             if c.execute("SELECT 1 FROM clientes_ruta WHERE route_id = ? AND codigo = ?", (route_id, codigo)).fetchone():
                 raise ErrorNegocio("El cliente ya está en la ruta.", 409)
+            if not c.execute("SELECT 1 FROM zonas WHERE route_id = ? AND prefijo = ?", (route_id, zona)).fetchone():
+                raise ErrorNegocio(f"La zona '{zona}' no está definida en la ruta (un prefijo retirado o inexistente no se usa): defínala primero.", 409)
             folder = f"{self._hwm(c, route_id, zona) + 1} {zona}"  # numeracion PERMANENTE: nunca se reutiliza un folder
             orden = (c.execute("SELECT COALESCE(MAX(orden),0) AS m FROM clientes_ruta WHERE route_id = ?", (route_id,)).fetchone()["m"]) + 1
             c.execute("INSERT INTO clientes_ruta(route_id, codigo, folder, zona, nombre, orden) VALUES (?,?,?,?,?,?)", (route_id, codigo, folder, zona, nombre.strip(), orden))
@@ -611,7 +622,7 @@ class Estado(OperacionesMixin, DocumentosMixin, FlujoMixin):
         destino_dir.mkdir(parents=True, exist_ok=True)
         nombre = f"portal-{self.reloj().strftime('%Y%m%d-%H%M%S')}.sqlite3"
         destino = destino_dir / nombre
-        origen = sqlite3.connect(self.ruta)
+        origen = sqlite3.connect(f"file:{self.ruta.resolve().as_posix()}?mode=ro", uri=True) if self.solo_lectura else sqlite3.connect(self.ruta)
         copia = sqlite3.connect(destino)
         try:
             origen.backup(copia)

@@ -373,6 +373,15 @@ class PortalServicio:
             raise ErrorNegocio("Archivo no válido: debe ser un .xlsx dentro de 01_Rutas del directorio de datos.", 400)
         try:
             contenido = leer_hojas_visita(origen)
+            roster = {c["codigo"] for c in (self.estado.obtener_ruta(route_id).get("clientes") or [])}   # el documento debe coincidir con la ruta: se advierte, no se adivina
+            docs = [c["codigo"] for h in contenido["hojas"] for c in h["clientes"]]
+            if roster:
+                if set(docs) - roster:
+                    contenido["advertencias"].append(f"Clientes del documento que NO están en la ruta: {sorted(set(docs) - roster)[:10]}.")
+                if roster - set(docs):
+                    contenido["advertencias"].append(f"Clientes de la ruta que NO están en el documento: {sorted(roster - set(docs))[:10]}.")
+                if len(docs) != len(roster):
+                    contenido["advertencias"].append(f"El documento trae {len(docs)} cliente(s) y la ruta {len(roster)}.")
         except Exception as e:  # noqa: BLE001
             raise ErrorNegocio(f"No se pudo leer el documento: {type(e).__name__}", 400) from e
         if not contenido["total_clientes"]:
