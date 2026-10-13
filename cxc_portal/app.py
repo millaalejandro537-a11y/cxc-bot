@@ -285,7 +285,7 @@ def ruta_csv(ctx: Contexto, p: Peticion):
         dec = s.decision_gerencia
         w.writerow([c.folder, c.zona, c.codigo, c.nombre, f"{c.saldo:.2f}", s.calculado, s.final, s.color_final,
                     f"{s.promedio_mora:.2f}" if s.promedio_mora is not None else "", s.historial_total, s.evaluables,
-                    len(s.alertas_cobro), len(s.alertas_historicas), f"{dec.actor}: {dec.motivo}" if dec else ""])
+                    len(s.alertas_cobro), len(s.alertas_historicas), (f"{dec.actor}: {dec.motivo}" + ("" if s.decision_aplicada else " [solo trazabilidad: prevalece el sistema]")) if dec else ""])
     ctx.estado_auditar(p, "reporte.csv", r.route_id)
     return Respuesta(cuerpo=("﻿" + buf.getvalue()).encode("utf-8"), tipo="text/csv; charset=utf-8",
                      cabeceras={"Content-Disposition": f'attachment; filename="cxc_{r.route_id}_{r.fuente.get("fecha_corte")}.csv"'})

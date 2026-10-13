@@ -108,13 +108,13 @@ def test_preparar_salida_reporta_excepciones_y_cambios_entre_salidas(env):
     assert ex["cambios_de_clasificacion"] == [] and any("snapshot" in a.lower() for a in ex["advertencias"])
     assert adm.post(f"/api/salidas/{s1}/revisar", {"nota": "Revisado sin novedades"})[0] == 200
     # entre salidas: gerencia decide un caso y se retira/agrega un cliente
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Decisión de gerencia que sustituye al automático (prueba)."})
+    assert ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "C", "motivo": "Gerencia resuelve la falta de evidencia (prueba)."})[0] == 201
     ctx.estado.quitar_cliente(ACTOR, "DEMO", "C90006")
     s2 = _salida(adm, "2026-10-20")
     ex2 = adm.post(f"/api/salidas/{s2}/preparar")[2]["reporte_excepciones"]
-    assert {"codigo": "C90004", "folder": "4 DM", "nombre": "SALON DEMO CANDIDATO A SOLO CONTADO", "antes": "SOLO_CONTADO", "ahora": "C"} in ex2["cambios_de_clasificacion"]
+    assert any(c["codigo"] == "C90008" and c["antes"] == "REVISION_HUMANA" and c["ahora"] == "C" for c in ex2["cambios_de_clasificacion"])
     assert [c["codigo"] for c in ex2["clientes_retirados"]] == ["C90006"]
-    assert "C90004" not in {c["codigo"] for c in ex2["pendientes_gerencia"]}
+    assert "C90008" not in {c["codigo"] for c in ex2["pendientes_gerencia"]}
     assert ger.post(f"/api/salidas/{s2}/revisar", {"nota": "Revisadas las excepciones de la salida."})[2]["revisada_por"] == "ger1"
     ven = cliente_con_login(s, "ven1", CLAVE_VEN)
     assert ven.post(f"/api/salidas/{s2}/preparar")[0] == 403 and ven.post(f"/api/salidas/{s2}/revisar", {"nota": "xxx"})[0] == 403

@@ -59,6 +59,46 @@ def test_carga_recibos_de_consulta_3_y_conciliaciones_de_consulta_2_sin_duplicar
     assert rec["8103"].via == "consulta 2" and rec["8102"].via == "consulta 3"
 
 
+def test_fecha_de_pago_es_la_del_recibo_y_la_conciliacion_se_conserva_aparte_y_la_nota_de_credito_se_acumula(tmp_path):
+    datos = cargar_consultas(_datos(tmp_path), {"C1"})
+    f = {x.numero: x for x in datos.facturas["C1"]}
+    rec = {r.numero: r for r in f["3000001"].recibos}
+    assert rec["8103"].fecha == date(2024, 2, 2) and rec["8103"].conciliacion == date(2024, 3, 4)       # pago 02/02, conciliado 04/03
+    assert rec["8102"].fecha == date(2024, 3, 4) and rec["8102"].conciliacion == date(2024, 3, 4)       # aplicacion directa confirmada por consulta 2
+    assert rec["8101"].conciliacion is None                                                              # solo consulta 3: sin fecha de conciliacion
+    assert f["3000003"].notas_credito == 1500.0 and f["3000003"].recibos == () and f["3000001"].notas_credito == 0.0
+
+
+def test_anticipo_conciliado_despues_aparece_como_recibo_anterior_a_la_emision(tmp_path):
+    d = tmp_path / "02_SAP_08Oct2026"
+    d.mkdir()
+    _xlsx(d / "consulta 1.xlsx", H1, [
+        [1, "C7", "UNO", "01/01/2022", 701, 7000001, "15/03/2022", "14/05/2022", 3200.0, 3200.0, "C", "LPS"],
+        [2, "C7", "UNO", "01/01/2022", 702, 7000002, "15/03/2022", "14/05/2022", 1500.0, 1500.0, "C", "LPS"],
+    ])
+    _xlsx(d / "consulta 3.xlsx", H3, [
+        [1, "C7", 701, 7000001, "14/05/2022", 5004, 5004, "10/04/2022", 600.0],
+        [2, "C7", 702, 7000002, "14/05/2022", 5004, 5004, "10/04/2022", 300.0],
+    ])
+    _xlsx(d / "consulta 2.xlsx", H2, [
+        [1, 5001, "18/07/2022", "0", None, "C7", "24", 5002, 2600.0, "C", 5003, "20/02/2022"],       # anticipo (antes de la emision), conciliado en enero
+        [2, 5001, "18/07/2022", "0", 1, "C7", "13", 701, 2600.0, "D"],
+        [3, 5005, "22/04/2022", "4", None, "C7", "14", 5006, 1200.0, "C"],                          # nota de credito contra la otra factura
+        [4, 5005, "22/04/2022", "4", 1, "C7", "13", 702, 1200.0, "D"],
+    ])
+    f = {x.numero: x for x in cargar_consultas(tmp_path, {"C7"}).facturas["C7"]}
+    anticipo = next(r for r in f["7000001"].recibos if r.numero == "5003")
+    assert anticipo.fecha == date(2022, 2, 20) and anticipo.conciliacion == date(2022, 7, 18) and anticipo.via == "consulta 2"
+    assert f["7000002"].notas_credito == 1200.0 and sum(r.monto for r in f["7000002"].recibos) == 300.0
+    # regla aprobada vigente: el anticipo no respalda el pago, pero el motivo muestra que SAP explica el total (3 facturas pagadas en el caso real)
+    r = ps.evaluar_cliente("C7", list(f.values()), date(2026, 10, 8), 60)
+    e1 = next(x for x in r.facturas if x.numero == "7000001")
+    assert e1.estado == ps.CERRADA_NO_ACREDITADA and e1.recibos_anteriores == 2600.0 and "explicado por SAP" in e1.motivo
+    r2 = ps.evaluar_cliente("C7", list(f.values()), date(2026, 10, 8), 60, anticipos_respaldan_pago=True)
+    e2 = next(x for x in r2.facturas if x.numero == "7000001")
+    assert e2.estado == ps.PAGADA and e2.mora == 0 and e2.ultimo_recibo == date(2022, 4, 10)           # fecha de pago, no la conciliacion (18/07/2022)
+
+
 def test_saldo_abierto_y_nombre_vienen_de_consulta_1(tmp_path):
     datos = cargar_consultas(_datos(tmp_path), {"C1"})
     assert datos.saldo_abierto == {"C1": 600.0} and datos.nombres["C1"] == "CLIENTE UNO"

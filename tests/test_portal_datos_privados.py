@@ -86,8 +86,8 @@ def test_los_55_clientes_de_punta_a_punta(entorno):
             assert d["fuente"]["tipo"] == "SNAPSHOT_SAP_HISTORICO" and d["fuente"]["fecha_corte"] == "2026-10-08" and d["fuente"]["en_vivo"] is False
             assert sem["calculado"] == f.calculado, c["codigo"]  # clasificacion automatica = Excel aprobado
             dec = decisiones.get(c["codigo"])
-            assert sem["final"] == (dec.clasificacion_final if dec else f.calculado), c["codigo"]
-            assert bool(sem["decision_gerencia"]) == bool(dec)
+            assert sem["final"] == f.calculado, c["codigo"]            # prevalece el resultado vigente del sistema sobre decisiones anteriores
+            assert bool(sem["decision_gerencia"]) == bool(dec) and sem["decision_aplicada"] is False       # la decision anterior solo queda como trazabilidad
             for k, esp in (("facturas_historial", f.historial), ("facturas_ventana", f.ventana), ("pagadas", f.pagadas), ("abiertas", f.abiertas),
                            ("no_acreditadas", f.no_acreditadas), ("facturas_en_media", f.evaluables), ("suma_mora", f.suma_mora)):
                 assert int(sem[k]) == int(esp), (c["codigo"], k)
@@ -126,8 +126,10 @@ def test_distribuciones_finales_y_decisiones(entorno):
     s, ctx, _ = entorno
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
     rutas = {r["route_id"]: r for r in ger.get("/api/rutas")[2]["rutas"]}
-    assert rutas["LAS_VEGAS"]["clasificacion"] == {"A": 6, "B": 3, "C": 4, "EN_PRUEBA": 9, "SOLO_CONTADO": 2}
-    assert rutas["YORO"]["clasificacion"] == {"A": 11, "B": 8, "C": 9, "SOLO_CONTADO": 2, "EN_PRUEBA": 1}
+    # Con la precedencia del sistema (2026-10-13) los 3 clientes que gerencia habia dejado en C pese a ser contado (1 LV, 2 Yoro) son ROJO.
+    assert rutas["LAS_VEGAS"]["clasificacion"] == {"A": 6, "B": 3, "C": 3, "EN_PRUEBA": 9, "SOLO_CONTADO": 3}
+    assert rutas["YORO"]["clasificacion"] == {"A": 11, "B": 8, "C": 7, "SOLO_CONTADO": 4, "EN_PRUEBA": 1}
+    assert sum(r["overrides_gerencia"] for r in rutas.values()) == 0 and sum(r["decisiones_solo_trazabilidad"] for r in rutas.values()) == 7
     vig = ctx.estado.decisiones_vigentes()
     assert len(vig) == 7 and all(d["actor"] and len(d["motivo"]) >= 10 for d in vig.values())
     for rid in ("LAS_VEGAS", "YORO"):
@@ -135,6 +137,7 @@ def test_distribuciones_finales_y_decisiones(entorno):
             sem = c["semaforo"]
             if sem["decision_gerencia"]:
                 assert sem["calculado"] == "SOLO_CONTADO" and sem["promedio_mora"] > ps.LIMITE_C  # el calculo automatico (contado) se conserva
+                assert sem["final"] == "SOLO_CONTADO" and sem["color_final"] == "ROJO" and sem["decision_aplicada"] is False
 
 
 def test_saldos_son_las_facturas_abiertas_de_la_consulta_1_y_coinciden_con_la_lista_de_ruta(entorno):

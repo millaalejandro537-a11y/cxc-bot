@@ -127,7 +127,7 @@ def test_cambio_de_clave_obligatorio_bloquea_el_resto(env):
 def test_csrf_obligatorio_en_mutaciones(env):
     s, _, _ = env
     c = cliente_con_login(s, "ger1", CLAVE_GER)
-    cuerpo = {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Decisión de prueba con motivo suficiente."}
+    cuerpo = {"codigo": "C90008", "clasificacion_final": "C", "motivo": "Decisión de prueba con motivo suficiente."}
     assert c.pedir("POST", "/api/decisiones", cuerpo, csrf=False)[0] == 403
     assert c.pedir("POST", "/api/decisiones", cuerpo, cabeceras={"X-CSRF-Token": "falso"})[0] == 403
     assert c.pedir("POST", "/api/decisiones", cuerpo)[0] == 201
@@ -196,7 +196,7 @@ def test_vendedor_no_accede_a_cartera_global_reportes_decisiones_ni_admin(env):
 def test_solo_gerencia_decide_admin_administra_pero_no_decide(env):
     s, _, _ = env
     adm, ger = cliente_con_login(s, "admin1", CLAVE_ADMIN), cliente_con_login(s, "ger1", CLAVE_GER)
-    cuerpo = {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia en prueba."}
+    cuerpo = {"codigo": "C90008", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia en prueba."}
     assert adm.post("/api/decisiones", cuerpo)[0] == 403              # separacion de funciones
     assert ger.post("/api/decisiones", cuerpo)[0] == 201
     assert ger.post("/api/admin/vendedores", {"nombre": "X"})[0] == 403

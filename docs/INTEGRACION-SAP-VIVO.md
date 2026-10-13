@@ -29,7 +29,9 @@ Alternativa equivalente: completar el `CosprobellBackendAdapter` de `cxc-reporti
 
 Reglas de lectura ya implementadas y probadas (`cxc_bot/sap_exports.py`, `cxc_bot/payment_semaphore.py`; el motor reproduce los Excel aprobados por gerencia 55/55 clientes):
 - Un recibo respalda una factura solo si su fecha contable es ≥ la fecha de emisión; la fecha de pago = fecha contable del **último** recibo cuando la suma de recibos cubre el total.
-- “Cerrada sin cobro íntegro acreditado” (nota de crédito, conciliación sin recibo, recibos anteriores a la emisión) no es pago y queda como excepción.
+- “Cerrada sin cobro íntegro acreditado” (nota de crédito, conciliación sin recibo, recibos anteriores a la emisión) no es pago y queda como excepción. Desde 2026-10-13 el motivo de cada factura así cerrada explica el panorama: recibos válidos, anticipos anteriores a la emisión (interruptor `ANTICIPOS_RESPALDAN_PAGO`, hoy apagado; ver `docs/MIGRACION-OCCIDENTE-119.md` §5.3) y notas de crédito (consulta 2, tipo 14).
+- La fecha de pago es la **contable del recibo**; la fecha de conciliación de SAP (consulta 2) se guarda aparte y no entra al cálculo.
+- El resultado del sistema **prevalece** sobre decisiones anteriores de gerencia (`SISTEMA_PREVALECE`); estas solo resuelven revisión humana por falta de evidencia o errores de datos.
 - Mora = max(0, último recibo contable —o fecha de corte si está abierta— − emisión − plazo de la ruta). Plazo foráneo 60 / local 30.
 
 ## 3. Validaciones obligatorias de la fuente viva

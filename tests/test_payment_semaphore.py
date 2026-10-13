@@ -116,13 +116,72 @@ def test_regla_anterior_candidato_pendiente_de_gerencia_sigue_disponible_por_par
     assert r.final == ps.CANDIDATO_SOLO_CONTADO and r.color_final == "PENDIENTE_GERENCIA" and r.requiere_gerencia
 
 
-def test_override_conserva_calculo_automatico_y_traza():
+def sin_base():
+    """4 facturas cerradas sin recibos ni cobro acreditado: historial suficiente pero nada aporta a la media (revision humana)."""
+    return [fac(i + 1, date(2025, 1, 1) + timedelta(days=20 * i)) for i in range(4)]
+
+
+def test_el_sistema_prevalece_sobre_una_decision_anterior_y_esta_se_conserva_para_trazabilidad():
     dec = ps.DecisionGerencia("C", "Mal cobro de un vendedor anterior.", "Gerencia", "2026-10-09")
     r = ev(serie([120] * 5), dec=dec)
     assert r.calculado == ps.SOLO_CONTADO and r.promedio_mora == 120.0 and r.alertas
-    assert r.final == "C" and r.color_final == "AMARILLO" and r.decision_gerencia.fecha == "2026-10-09"
+    assert r.final == ps.SOLO_CONTADO and r.color_final == "ROJO" and not r.decision_aplicada          # contado = ROJO automatico
+    assert r.decision_gerencia.fecha == "2026-10-09" and r.decision_gerencia.clasificacion_final == "C"  # la decision anterior NO se pierde
+    assert any("solo para trazabilidad" in x and "prevalece el resultado vigente del sistema" in x for x in r.explicacion)
     d = r.to_dict()
-    assert d["calculado"] == "SOLO_CONTADO" and d["decision_gerencia"]["actor"] == "Gerencia"
+    assert d["calculado"] == "SOLO_CONTADO" and d["final"] == "SOLO_CONTADO" and d["decision_aplicada"] is False and d["decision_gerencia"]["actor"] == "Gerencia"
+
+
+def test_la_decision_solo_resuelve_lo_que_el_sistema_no_puede_determinar():
+    dec = ps.DecisionGerencia("C", "Evidencia revisada por gerencia: cliente regular.", "Gerencia", "2026-10-13")
+    r = ev(sin_base(), dec=dec)
+    assert r.calculado == ps.REVISION_HUMANA and r.final == "C" and r.decision_aplicada and not r.requiere_gerencia
+    assert ev(sin_base()).requiere_gerencia                                                              # sin decision: revision humana pendiente
+
+
+def test_la_precedencia_del_sistema_se_puede_desactivar(monkeypatch):
+    monkeypatch.setattr(ps, "SISTEMA_PREVALECE", False)
+    dec = ps.DecisionGerencia("C", "Mal cobro de un vendedor anterior.", "Gerencia", "2026-10-09")
+    r = ev(serie([120] * 5), dec=dec)
+    assert r.final == "C" and r.decision_aplicada and r.calculado == ps.SOLO_CONTADO
+
+
+def test_con_la_regla_anterior_de_candidatos_la_decision_sigue_resolviendo():
+    dec = ps.DecisionGerencia(ps.SOLO_CONTADO, "Confirmado por gerencia como solo contado.", "Gerencia", "2026-10-09")
+    r = ps.evaluar_cliente("C1", serie([90] * 5), CORTE, 60, dec, contado_automatico=False)
+    assert r.calculado == ps.CANDIDATO_SOLO_CONTADO and r.final == ps.SOLO_CONTADO and r.decision_aplicada
+
+
+def test_anticipo_anterior_a_la_emision_no_respalda_el_pago_pero_queda_en_la_evidencia():
+    e = date(2025, 8, 1)
+    f = fac(50, e, total=1000.0, recibos=(ps.Recibo("A1", e - timedelta(days=30), 1000.0, "consulta 2", e + timedelta(days=90)),))
+    r = ev(serie([0, 0, 0]) + [f])
+    ef = next(x for x in r.facturas if x.numero == "50")
+    assert r.evaluables == 3 and ef.estado == ps.CERRADA_NO_ACREDITADA and ef.mora is None and not ef.en_media
+    assert ef.recibos_anteriores == 1000.0 and ef.recibos_total == 0.0 and ps.EXC_RECIBO_ANTERIOR_A_EMISION in ef.excepciones
+    assert "anteriores a la emisión 1,000.00" in ef.motivo and "explicado por SAP" in ef.motivo and ef.to_dict()["recibos_anteriores"] == 1000.0
+
+
+def test_con_el_interruptor_de_anticipos_cuenta_como_cobro_y_la_fecha_de_conciliacion_nunca_genera_mora():
+    e = date(2025, 8, 1)
+    # recibo del 02/07 (antes de la emision), conciliado por SAP 200 dias despues del vencimiento: la fecha de PAGO manda, no la de conciliacion
+    f = fac(50, e, total=1000.0, recibos=(ps.Recibo("A1", e - timedelta(days=30), 1000.0, "consulta 2", e + timedelta(days=260)),))
+    r = ps.evaluar_cliente("C1", serie([0, 0, 0]) + [f], CORTE, 60, anticipos_respaldan_pago=True)
+    ef = next(x for x in r.facturas if x.numero == "50")
+    assert ef.estado == ps.PAGADA and ef.mora == 0 and ef.en_media and r.evaluables == 4
+    assert ps.EXC_RECIBO_ANTERIOR_A_EMISION in ef.excepciones and "anticipo conciliado" in ef.motivo
+    assert ef.recibos[0].conciliacion == e + timedelta(days=260) and ef.to_dict()["recibos"][0]["conciliacion"] == (e + timedelta(days=260)).isoformat()
+    # y por defecto (regla aprobada) el resultado es el contrario
+    assert ev(serie([0, 0, 0]) + [f]).evaluables == 3
+
+
+def test_nota_de_credito_no_es_pago_y_el_motivo_explica_el_cierre():
+    e = date(2025, 3, 1)
+    f = ps.FacturaSAP("9", "9", e, None, 1500.0, 1500.0, "C", (ps.Recibo("R", e + timedelta(days=29), 300.0, "consulta 3"),), notas_credito=1200.0)
+    r = ev(serie([0, 0, 0]) + [f])
+    ef = next(x for x in r.facturas if x.numero == "9")
+    assert ef.estado == ps.CERRADA_NO_ACREDITADA and not ef.en_media and r.evaluables == 3 and ef.notas_credito == 1200.0
+    assert "recibos 300.00" in ef.motivo and "nota de crédito 1,200.00 (no es un pago)" in ef.motivo and "explicado por SAP" in ef.motivo
 
 
 def test_alerta_mayor_60_aunque_la_media_sea_buena():
@@ -165,7 +224,8 @@ def test_evaluar_ruta_usa_el_mismo_motor_y_aplica_decisiones():
     fuente = _Fuente({"C1": serie([90] * 5), "C2": serie([0] * 4)})
     dec = {"c1": ps.DecisionGerencia("C", "Decisión de gerencia que sustituye al automático", "Gerencia", "2026-10-10")}
     res = ps.evaluar_ruta(["C1", "C2", "C3"], fuente, 60, dec)
-    assert res["C1"].calculado == ps.SOLO_CONTADO and res["C1"].final == "C" and res["C1"].color_final == "AMARILLO"
+    assert res["C1"].calculado == ps.SOLO_CONTADO and res["C1"].final == ps.SOLO_CONTADO and res["C1"].color_final == "ROJO"   # prevalece el sistema
+    assert res["C1"].decision_gerencia is not None and not res["C1"].decision_aplicada                                       # decision solo trazabilidad
     assert ps.evaluar_ruta(["C1"], fuente, 60)["C1"].color_final == "ROJO"          # sin decision: el contado es rojo automaticamente
     assert res["C2"].final == "A" and res["C3"].final == ps.EN_PRUEBA
 

@@ -59,7 +59,8 @@ class Ruta:
             "route_id": self.route_id, "nombre": self.nombre, "vendedor": self.vendedor, "tipo_ruta": self.tipo_ruta,
             "plazo_dias": self.plazo_dias, "fuente": self.fuente, "clientes": len(self.clientes),
             "saldo_total": round(sum(c.saldo for c in self.clientes), 2), "clasificacion": final, "clasificacion_calculada": calc,
-            "overrides_gerencia": sum(1 for c in self.clientes if c.resultado.decision_gerencia),
+            "overrides_gerencia": sum(1 for c in self.clientes if c.resultado.decision_aplicada),
+            "decisiones_solo_trazabilidad": sum(1 for c in self.clientes if c.resultado.decision_gerencia and not c.resultado.decision_aplicada),
             "alertas_cobro": sum(len(c.resultado.alertas_cobro) for c in self.clientes),
             "alertas_historicas": sum(len(c.resultado.alertas_historicas) for c in self.clientes),
             "estado_fisico": self.estado_fisico, "notas": self.notas, "avisos": self.avisos,
@@ -161,6 +162,10 @@ class PortalServicio:
             raise ErrorNegocio("El cliente no pertenece a ninguna ruta.", 404)
         r, c = hit
         s = c.resultado
+        if ps.SISTEMA_PREVALECE and s.calculado not in (ps.REVISION_HUMANA, ps.SIN_DATOS, ps.CANDIDATO_SOLO_CONTADO):
+            raise ErrorNegocio(f"El sistema ya determina la categoría de este cliente ({ps.ETIQUETA.get(s.calculado, s.calculado)}): prevalece el resultado "
+                               "vigente. Las decisiones de gerencia solo aplican cuando el sistema no puede determinarla (revisión humana por falta de "
+                               "evidencia o errores de datos).", 409)
         d = self.estado.registrar_decision(actor, c.codigo, final, motivo, route_id=r.route_id, calculado=s.calculado, promedio=s.promedio_mora,
                                            fecha_corte=r.fuente.get("fecha_corte"))
         self.invalidar()

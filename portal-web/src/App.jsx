@@ -37,7 +37,8 @@ function Panel({ rutas, enVivo, prioridades, abrirRuta, abrirCliente, capacidade
               ))}
             </div>
             <p className="muted small">
-              {r.overrides_gerencia > 0 && `${r.overrides_gerencia} decisión(es) de gerencia sobre el cálculo automático · `}
+              {r.overrides_gerencia > 0 && `${r.overrides_gerencia} decisión(es) de gerencia aplicadas · `}
+              {r.decisiones_solo_trazabilidad > 0 && `${r.decisiones_solo_trazabilidad} decisión(es) anteriores solo como trazabilidad (prevalece el sistema) · `}
               {r.alertas_cobro} alerta(s) de cobro (abiertas &gt; 60 d) · {r.alertas_historicas} histórica(s) de comportamiento (pagadas &gt; 60 d)
             </p>
             {r.estado_fisico && <p className="muted small">{r.estado_fisico}</p>}
@@ -181,9 +182,9 @@ function Cliente({ codigo, volver, user }) {
           <p className="big"><Semaforo s={s} /></p>
           {s.decision_gerencia && (
             <div className="decision">
-              <b>Decisión de gerencia</b> — {s.decision_gerencia.actor}{s.decision_gerencia.fecha ? ` · ${fdate(s.decision_gerencia.fecha)}` : ''}
+              <b>{s.decision_aplicada ? 'Decisión de gerencia' : 'Decisión anterior de gerencia (solo trazabilidad)'}</b> — {s.decision_gerencia.actor}{s.decision_gerencia.fecha ? ` · ${fdate(s.decision_gerencia.fecha)}` : ''}
               <p>{s.decision_gerencia.motivo}</p>
-              <p className="muted small">Cálculo automático conservado: {s.etiqueta_calculada}{s.promedio_mora != null ? ` (${s.promedio_mora} días de mora media)` : ''}.</p>
+              <p className="muted small">{s.decision_aplicada ? 'Cálculo automático conservado' : 'Prevalece el resultado vigente del sistema'}: {s.etiqueta_calculada}{s.promedio_mora != null ? ` (${s.promedio_mora} días de mora media)` : ''}.</p>
             </div>
           )}
           <p className="muted small">Calculada automáticamente por el motor Python a partir de las consultas SAP del {fdate(c.fuente.fecha_corte)}.</p>

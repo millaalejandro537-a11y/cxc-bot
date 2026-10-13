@@ -6,6 +6,9 @@ SOLO LECTURA de archivos locales (fuera de Git; ver docs/PORTAL-MVP.md). No cons
 - consulta 3: aplicaciones directas recibo -> factura (fecha CONTABLE del recibo, MontoAplicado).
 - consulta 2: conciliaciones; las lineas de recibo (tipo 24, haber) que concilian contra la factura (tipo 13, debe)
   aportan recibos que consulta 3 no lista como aplicacion directa.
+- consulta 2 tambien trae las NOTAS DE CREDITO (tipo 14) conciliadas contra la factura: se acumulan aparte (NO son pago).
+Fechas: la de PAGO es la fecha contable del recibo (consulta 3: FechaContableRecibo; consulta 2: FechaRecibo). La fecha de CONCILIACION
+(consulta 2) es cuando SAP aplico el recibo y puede llegar meses despues: se conserva como dato informativo, nunca como fecha de pago.
 Un mismo recibo respaldando una factura se cuenta una sola vez (el mayor monto observado).
 """
 
@@ -81,13 +84,17 @@ def cargar_consultas(data_dir: Path, codigos: Optional[Set[str]] = None) -> Dato
                      "estado": str(r.get("Estado") or "").strip().upper()}
 
     rec: Dict[str, Dict[str, Recibo]] = defaultdict(dict)   # factura -> recibo id -> Recibo
+    notas: Dict[str, float] = defaultdict(float)            # factura -> notas de credito conciliadas
 
-    def _poner(idf: str, rid: str, numero: str, fecha: Optional[date], monto: float, via: str):
+    def _poner(idf: str, rid: str, numero: str, fecha: Optional[date], monto: float, via: str, conciliacion: Optional[date] = None):
         if fecha is None or monto <= 0:
             return
         prev = rec[idf].get(rid)
         if prev is None or monto > prev.monto:
-            rec[idf][rid] = Recibo(numero or rid, fecha, round(monto, 2), via if prev is None else prev.via)
+            rec[idf][rid] = Recibo(numero or rid, fecha, round(monto, 2), via if prev is None else prev.via,
+                                   conciliacion or (prev.conciliacion if prev else None))
+        elif conciliacion and prev.conciliacion is None:
+            rec[idf][rid] = Recibo(prev.numero, prev.fecha, prev.monto, prev.via, conciliacion)
 
     for r in _filas(d / C3):
         idf = _id(r.get("IdFactura"))
@@ -96,20 +103,35 @@ def cargar_consultas(data_dir: Path, codigos: Optional[Set[str]] = None) -> Dato
                    _num(r.get("MontoAplicado")), "consulta 3")
 
     # consulta 2: conciliaciones -> debitos (facturas) y creditos (recibos) de la misma conciliacion
-    conc: Dict[str, dict] = defaultdict(lambda: {"deb": [], "cred": []})
+    conc: Dict[str, dict] = defaultdict(lambda: {"deb": [], "cred": [], "nc": [], "fecha": None})
     for r in _filas(d / C2):
         tipo, dh = str(r.get("TipoDocumento") or "").strip(), str(r.get("DebeHaber") or "").strip()
         idc = _id(r.get("IdConciliacion"))
         idd = _id(r.get("IdDocumento"))
+        conc[idc]["fecha"] = conc[idc]["fecha"] or _fecha(r.get("FechaConciliacion"))
         if tipo == "13" and dh == "D" and idd in base:
             conc[idc]["deb"].append((idd, _num(r.get("MontoConciliado"))))
         elif tipo == "24" and dh == "C":
             conc[idc]["cred"].append((idd, _id(r.get("NumeroRecibo")), _fecha(r.get("FechaRecibo")), _num(r.get("MontoConciliado")), str(r.get("CodigoCliente") or "").strip().upper()))
+        elif tipo == "14" and dh == "C":
+            conc[idc]["nc"].append(_num(r.get("MontoConciliado")))
     for idc, g in conc.items():
-        if not g["deb"] or not g["cred"]:
+        if not g["deb"] or not (g["cred"] or g["nc"]):
             continue
-        # asignacion en orden: cada recibo cubre las facturas de la conciliacion hasta agotar su monto
+        # asignacion en orden sobre los debitos (facturas) de la conciliacion. Primero las NOTAS DE CREDITO (que NO son pago): ante una
+        # conciliacion mixta ambigua nunca se acredita a recibos mas de lo que corresponde. Luego cada recibo cubre las facturas restantes.
         pend = [[idf, m] for idf, m in sorted(g["deb"])]
+        for monto_nc in g["nc"]:
+            resto = monto_nc
+            for p in pend:
+                if resto <= 0:
+                    break
+                if p[1] <= 0:
+                    continue
+                uso = min(p[1], resto)
+                notas[p[0]] += uso
+                p[1] -= uso
+                resto -= uso
         for rid, num, fecha, monto, _cod in sorted(g["cred"], key=lambda x: (x[2] or date.min, x[0])):
             resto = monto
             for p in pend:
@@ -118,7 +140,7 @@ def cargar_consultas(data_dir: Path, codigos: Optional[Set[str]] = None) -> Dato
                 if p[1] <= 0:
                     continue
                 uso = min(p[1], resto)
-                _poner(p[0], rid, num, fecha, uso, "consulta 2")
+                _poner(p[0], rid, num, fecha, uso, "consulta 2", g["fecha"])
                 p[1] -= uso
                 resto -= uso
 
@@ -130,7 +152,7 @@ def cargar_consultas(data_dir: Path, codigos: Optional[Set[str]] = None) -> Dato
             continue
         facturas[b["cod"]].append(FacturaSAP(
             id_factura=idf, numero=b["numero"], fecha_factura=b["fecha"], vencimiento_sap=b["venc"], total=b["total"],
-            aplicado_sap=b["aplicado"], estado_sap=b["estado"], recibos=tuple(rec[idf].values())))
+            aplicado_sap=b["aplicado"], estado_sap=b["estado"], recibos=tuple(rec[idf].values()), notas_credito=round(notas.get(idf, 0.0), 2)))
         nombres.setdefault(b["cod"], b["nombre"])
         if b["estado"] == "O":
             saldo[b["cod"]] += b["total"] - b["aplicado"]

@@ -17,10 +17,16 @@ Reglas (Hub "Cosprobell CxC -- Principal", LEEME del paquete de datos 08-09/10/2
 - Media sin redondear, sin predominancia: A <= 5; B > 5 y <= 15; C > 15 y <= 60; > 60 CONTADO.
   REGLA VIGENTE desde 2026-10-12: el resultado Contado es ROJO (SOLO_CONTADO) sin aprobacion adicional de gerencia
   (`CONTADO_AUTOMATICO`; antes era CANDIDATO_SOLO_CONTADO con revision humana obligatoria).
+- Fecha de pago = fecha CONTABLE del recibo (nunca la fecha de conciliacion/aplicacion en SAP, que puede llegar meses despues). Un
+  recibo fechado ANTES de la emision (anticipo / pago a cuenta conciliado despues) NO respalda el pago segun la regla aprobada vigente
+  (`ANTICIPOS_RESPALDAN_PAGO = False`); se muestra como evidencia y excepcion informativa para que quien revise vea el panorama completo.
+  Las notas de credito NO son pago.
 - Alerta independiente por cada factura evaluada con mora > 60, aunque la media del cliente sea mejor. Se SEPARAN:
   abiertas = alertas OPERATIVAS DE COBRO (hay saldo pendiente); pagadas = alertas HISTORICAS DE COMPORTAMIENTO (ya
   cobradas: nunca son cobro pendiente).
-- Las decisiones de gerencia (override) se guardan APARTE del calculo automatico, con autor, motivo y fecha.
+- Las decisiones de gerencia se guardan APARTE del calculo automatico, con autor, motivo y fecha. Desde 2026-10-13 el resultado vigente
+  del sistema PREVALECE sobre decisiones comerciales anteriores (`SISTEMA_PREVALECE`): se conservan solo para trazabilidad. Una decision
+  solo resuelve lo que el sistema NO puede determinar (revision humana / falta de evidencia).
 
 Sustituye a `payment_behavior.evaluate_client` (reglas superadas: predominio y minimo de 4 PAGADAS).
 """
@@ -58,6 +64,16 @@ SIN_DATOS = "SIN_DATOS"
 # (o pasar `contado_automatico=False`): el motor es unico y esta es la unica bifurcacion.
 CONTADO_AUTOMATICO = True
 
+# REGLA VIGENTE (Alejandro, 2026-10-13): el resultado vigente del sistema prevalece sobre decisiones comerciales ANTERIORES de gerencia. Esas
+# decisiones se conservan (autor, motivo, fecha) solo para trazabilidad; unicamente resuelven lo que el sistema no puede determinar (revision
+# humana por falta de evidencia o errores de datos). Poner False devuelve el comportamiento anterior (la decision sustituye cualquier resultado).
+SISTEMA_PREVALECE = True
+
+# Recibos fechados ANTES de la emision (anticipos conciliados despues contra la factura). Regla aprobada vigente: NO respaldan el pago
+# (la factura queda "cerrada sin cobro integro acreditado"). Con True cuentan como cobro (fecha de pago anterior al vencimiento => sin mora).
+# Es una decision de metodologia de Alejandro: cambiarla reclasifica muchos clientes (ver docs/MIGRACION-OCCIDENTE-119.md, seccion 5).
+ANTICIPOS_RESPALDAN_PAGO = False
+
 COLOR = {
     A: "VERDE", B: "AZUL", C: "AMARILLO", SOLO_CONTADO: "ROJO", EN_PRUEBA: "BLANCO",
     CANDIDATO_SOLO_CONTADO: "PENDIENTE_GERENCIA", REVISION_HUMANA: "PENDIENTE_GERENCIA", SIN_DATOS: "SIN_DATOS",
@@ -85,6 +101,7 @@ class Recibo:
     fecha: date                 # fecha CONTABLE del recibo (no necesariamente el dia bancario)
     monto: float
     via: str = ""               # de que consulta/relacion sale la evidencia
+    conciliacion: Optional[date] = None   # fecha en que SAP concilio/aplico el recibo (informativa: NO es la fecha de pago)
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,7 @@ class FacturaSAP:
     aplicado_sap: float
     estado_sap: str             # 'C' cerrada / 'O' abierta (tal como la entrega SAP)
     recibos: Tuple[Recibo, ...] = ()
+    notas_credito: float = 0.0  # notas de credito conciliadas contra la factura (NO son pago)
 
 
 ALERTA_COBRO = "COBRO_OPERATIVA"          # factura ABIERTA con mora > 60: gestion de cobro
@@ -143,6 +161,8 @@ class EvidenciaFactura:
     alerta_mayor_60: bool
     excepciones: Tuple[str, ...]
     motivo: str
+    notas_credito: float = 0.0
+    recibos_anteriores: float = 0.0   # monto de recibos fechados antes de la emision (anticipos); cuenta como pago solo si ANTICIPOS_RESPALDAN_PAGO
 
     def to_dict(self) -> dict:
         return {
@@ -152,7 +172,9 @@ class EvidenciaFactura:
             "estado": self.estado, "total": self.total, "aplicado_sap": self.aplicado_sap,
             "recibos_total": self.recibos_total,
             "ultimo_recibo": self.ultimo_recibo.isoformat() if self.ultimo_recibo else None,
-            "recibos": [{"numero": r.numero, "fecha": r.fecha.isoformat(), "monto": r.monto, "via": r.via} for r in self.recibos],
+            "recibos": [{"numero": r.numero, "fecha": r.fecha.isoformat(), "monto": r.monto, "via": r.via,
+                         "conciliacion": r.conciliacion.isoformat() if r.conciliacion else None} for r in self.recibos],
+            "notas_credito": self.notas_credito, "recibos_anteriores": self.recibos_anteriores,
             "mora": self.mora, "en_media": self.en_media, "alerta_mayor_60": self.alerta_mayor_60,
             "excepciones": list(self.excepciones), "motivo": self.motivo,
         }
@@ -176,6 +198,7 @@ class ResultadoCliente:
     explicacion: Tuple[str, ...]
     facturas: Tuple[EvidenciaFactura, ...]
     decision_gerencia: Optional[DecisionGerencia]
+    decision_aplicada: bool = False   # False = la decision se conserva solo para trazabilidad (prevalece el sistema)
 
     @property
     def alertas(self) -> Tuple[Alerta, ...]:
@@ -205,6 +228,7 @@ class ResultadoCliente:
             "alertas_historicas": [a.to_dict() for a in self.alertas_historicas], "explicacion": list(self.explicacion),
             "facturas": [f.to_dict() for f in self.facturas],
             "decision_gerencia": self.decision_gerencia.__dict__ if self.decision_gerencia else None,
+            "decision_aplicada": self.decision_aplicada,
             "requiere_gerencia": self.requiere_gerencia,
         }
 
@@ -226,12 +250,18 @@ def _numero_orden(f: FacturaSAP):
         return (0, str(f.numero))
 
 
-def _evidencia(f: FacturaSAP, corte: date, plazo: int) -> EvidenciaFactura:
+def _evidencia(f: FacturaSAP, corte: date, plazo: int, anticipos: Optional[bool] = None) -> EvidenciaFactura:
+    anticipos = ANTICIPOS_RESPALDAN_PAGO if anticipos is None else anticipos
     venc_ruta = f.fecha_factura + timedelta(days=plazo)
     todos = tuple(sorted(f.recibos, key=lambda r: (r.fecha, r.numero)))
-    # Un recibo fechado ANTES de la emision no puede respaldar el pago de esa factura (no se fuerza fecha de pago).
-    recibos = tuple(r for r in todos if r.fecha >= f.fecha_factura)
-    anteriores = len(todos) - len(recibos)
+    # Recibo fechado ANTES de la emision = anticipo conciliado despues contra la factura. Segun la regla aprobada no respalda el pago (no se
+    # fuerza fecha de pago); con ANTICIPOS_RESPALDAN_PAGO cuenta como cobro y, al ser anterior al vencimiento, no genera mora. La fecha de
+    # conciliacion en SAP no es fecha de pago y nunca entra al calculo.
+    previos = tuple(r for r in todos if r.fecha < f.fecha_factura)
+    anteriores = len(previos)
+    anterior_monto = round(sum(r.monto for r in previos), 2)
+    recibos = todos if anticipos else tuple(r for r in todos if r.fecha >= f.fecha_factura)
+    nc = round(f.notas_credito, 2)
     recibos_total = round(sum(r.monto for r in recibos), 2)
     ultimo = recibos[-1].fecha if recibos else None
     exc: List[str] = []
@@ -254,20 +284,29 @@ def _evidencia(f: FacturaSAP, corte: date, plazo: int) -> EvidenciaFactura:
         mora = max(0, (ultimo - venc_ruta).days)
         en_media = True
         motivo = f"Pagada íntegramente por recibos; último recibo contable {ultimo.strftime('%d/%m/%Y')}: mora {mora} días."
+        if anteriores:
+            exc.append(EXC_RECIBO_ANTERIOR_A_EMISION)  # informativo: anticipo conciliado; no se excluye
+            motivo += f" Incluye {anteriores} recibo(s) anterior(es) a la emisión (anticipo conciliado contra la factura)."
     else:
         estado = CERRADA_NO_ACREDITADA
         exc.append(EXC_CIERRE_NO_ACREDITADO)
         if anteriores:
             exc.append(EXC_RECIBO_ANTERIOR_A_EMISION)
-            motivo = "Cerrada, pero parte del respaldo son recibos anteriores a la emisión: no se fuerza fecha de pago; excluida de la media."
-        else:
-            motivo = "Cerrada sin cobro íntegro acreditado por recibos (nota de crédito/conciliación): excluida de la media."
+        partes = [f"recibos {recibos_total:,.2f}"]
+        if anteriores and not anticipos:
+            partes.append(f"recibos anteriores a la emisión {anterior_monto:,.2f} (anticipos conciliados; no cuentan como pago según la regla vigente)")
+        if nc > 0:
+            partes.append(f"nota de crédito {nc:,.2f} (no es un pago)")
+        explicado = recibos_total + (0 if anticipos else anterior_monto) + nc + TOLERANCIA_MONTO >= f.total
+        motivo = ("Cerrada sin cobro íntegro acreditado por recibos: " + " + ".join(partes)
+                  + (f" = total de la factura ({f.total:,.2f}) explicado por SAP" if explicado and len(partes) > 1 else "")
+                  + ". Cuenta en la ventana, no en la media.")
     return EvidenciaFactura(
         id_factura=f.id_factura, numero=f.numero, fecha_factura=f.fecha_factura, vencimiento_ruta=venc_ruta,
         vencimiento_sap=f.vencimiento_sap, estado=estado, total=f.total, aplicado_sap=f.aplicado_sap,
         recibos_total=recibos_total, ultimo_recibo=ultimo, recibos=recibos, mora=mora, en_media=en_media,
         alerta_mayor_60=bool(en_media and mora is not None and mora > ALERTA_FACTURA),
-        excepciones=tuple(exc), motivo=motivo)
+        excepciones=tuple(exc), motivo=motivo, notas_credito=nc, recibos_anteriores=anterior_monto)
 
 
 def evaluar_cliente(
@@ -277,11 +316,12 @@ def evaluar_cliente(
     plazo_dias: int,
     decision: Optional[DecisionGerencia] = None,
     contado_automatico: Optional[bool] = None,
+    anticipos_respaldan_pago: Optional[bool] = None,
 ) -> ResultadoCliente:
     todas = list(facturas)
     historial = len(todas)
     recientes = sorted(todas, key=lambda f: (f.fecha_factura.toordinal(), _numero_orden(f)), reverse=True)[:VENTANA_FACTURAS]
-    ev = [_evidencia(f, fecha_corte, plazo_dias) for f in recientes]
+    ev = [_evidencia(f, fecha_corte, plazo_dias, anticipos_respaldan_pago) for f in recientes]
     moras = [e.mora for e in ev if e.en_media and e.mora is not None]
     alertas_cobro = tuple(
         Alerta(ALERTA_COBRO, e.numero, e.mora, round(max(0.0, e.total - e.aplicado_sap), 2),
@@ -315,15 +355,22 @@ def evaluar_cliente(
     elif calculado == CANDIDATO_SOLO_CONTADO:
         expl.append("Es una PROPUESTA: la viñeta roja / solo contado requiere decisión de gerencia.")
     final = calculado
+    aplicada = False
     if decision is not None:
-        final = decision.clasificacion_final
-        expl.append(f"Decisión de gerencia ({decision.actor}): {ETIQUETA.get(final, final)}. Motivo: {decision.motivo.rstrip('.')}. El cálculo automático se conserva.")
+        if SISTEMA_PREVALECE and calculado not in (REVISION_HUMANA, SIN_DATOS, CANDIDATO_SOLO_CONTADO):
+            expl.append(f"Decisión anterior de gerencia ({decision.actor}{', ' + decision.fecha if decision.fecha else ''}): "
+                        f"{ETIQUETA.get(decision.clasificacion_final, decision.clasificacion_final)}. Motivo: {decision.motivo.rstrip('.')}. "
+                        f"Se conserva solo para trazabilidad: prevalece el resultado vigente del sistema ({ETIQUETA.get(calculado, calculado)}).")
+        else:
+            final = decision.clasificacion_final
+            aplicada = True
+            expl.append(f"Decisión de gerencia ({decision.actor}): {ETIQUETA.get(final, final)}. Motivo: {decision.motivo.rstrip('.')}. El cálculo automático se conserva.")
 
     return ResultadoCliente(
         codigo=codigo, calculado=calculado, final=final, promedio_mora=promedio, suma_mora=sum(moras),
         historial_total=historial, en_ventana=len(ev), pagadas=sum(1 for e in ev if e.estado == PAGADA),
         abiertas=sum(1 for e in ev if e.estado == ABIERTA), no_acreditadas=sum(1 for e in ev if e.estado == CERRADA_NO_ACREDITADA),
-        evaluables=len(moras), alertas_cobro=alertas_cobro, alertas_historicas=alertas_hist, explicacion=tuple(expl), facturas=tuple(ev), decision_gerencia=decision)
+        evaluables=len(moras), alertas_cobro=alertas_cobro, alertas_historicas=alertas_hist, explicacion=tuple(expl), facturas=tuple(ev), decision_gerencia=decision, decision_aplicada=aplicada)
 
 
 class PaymentEvidenceSource(Protocol):
@@ -341,9 +388,10 @@ def evaluar_ruta(
     plazo_dias: int,
     decisiones: Optional[Dict[str, DecisionGerencia]] = None,
     contado_automatico: Optional[bool] = None,
+    anticipos_respaldan_pago: Optional[bool] = None,
 ) -> Dict[str, ResultadoCliente]:
     """Evalua todos los clientes de una ruta con el mismo motor. Un cliente sin facturas queda EN_PRUEBA (0 en historial)."""
     cods = [c.strip().upper() for c in codigos]
     facturas = fuente.facturas_por_cliente(cods)
     dec = {k.strip().upper(): v for k, v in (decisiones or {}).items()}
-    return {c: evaluar_cliente(c, facturas.get(c, []), fuente.fecha_corte, plazo_dias, dec.get(c), contado_automatico) for c in cods}
+    return {c: evaluar_cliente(c, facturas.get(c, []), fuente.fecha_corte, plazo_dias, dec.get(c), contado_automatico, anticipos_respaldan_pago) for c in cods}

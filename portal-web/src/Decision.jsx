@@ -11,7 +11,9 @@ export function DecisionPanel({ cliente, rol, recargar }) {
   const [msg, setMsg] = useState(null)
   const hist = cliente.historial_decisiones || []
   const vigente = hist.find((h) => h.estado === 'vigente')
-  const puede = rol === 'gerencia'
+  const sem = cliente.semaforo || {}
+  const sistemaDetermina = !!sem.calculado && !['REVISION_HUMANA', 'SIN_DATOS', 'CANDIDATO_SOLO_CONTADO'].includes(sem.calculado)
+  const puede = rol === 'gerencia' && !sistemaDetermina
 
   const enviar = async (e) => {
     e.preventDefault()
@@ -32,7 +34,8 @@ export function DecisionPanel({ cliente, rol, recargar }) {
   return (
     <section>
       <h3>Decisiones de gerencia</h3>
-      <p className="muted small">El cálculo automático nunca se altera: la decisión se guarda aparte con autor, motivo y fecha.</p>
+      <p className="muted small">El cálculo automático nunca se altera: la decisión se guarda aparte con autor, motivo y fecha.
+        {sistemaDetermina ? ' El sistema determina la categoría de este cliente y prevalece sobre decisiones anteriores; solo se pide decisión cuando falta evidencia o hay errores de datos.' : ''}</p>
       {vigente && (
         <div className="decision">
           <b>Vigente:</b> {vigente.clasificacion_final.replaceAll('_', ' ')} — {vigente.actor} · {fdate(vigente.fecha)}
@@ -51,7 +54,7 @@ export function DecisionPanel({ cliente, rol, recargar }) {
           <button type="submit">Registrar decisión</button>
           {msg && <p className="error">{msg}</p>}
         </form>
-      ) : <p className="muted small">Solo el rol Gerencia puede registrar decisiones.</p>}
+      ) : <p className="muted small">{rol === 'gerencia' ? 'No se requiere decisión: el sistema determina la categoría.' : 'Solo el rol Gerencia puede registrar decisiones.'}</p>}
       {hist.length > 0 && (
         <details><summary>Historial ({hist.length})</summary>
           <ul className="notas">{hist.map((h) => <li key={h.id}>{fdate(h.fecha)} · {h.clasificacion_final} · {h.estado} · {h.actor}: {h.motivo}{h.anulada_motivo ? ` (anulada: ${h.anulada_motivo})` : ''}</li>)}</ul>

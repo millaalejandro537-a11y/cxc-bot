@@ -57,6 +57,9 @@ El Portal consume el contrato mediante `cxc_portal/fuente_empresarial.py` (inter
 | `monto` | sí | decimal | > 0. |
 | `aplicaciones[]` | sí | lista | `{ id_factura, monto }`: cómo se reparte el recibo. Una aplicación a una factura inexistente se reporta, no se inventa. |
 | `via` | no | `aplicacion_directa` / `conciliacion` | Origen de la evidencia (consultas SAP 3 y 2 respectivamente). |
+| `fecha_conciliacion` | **pedido** | fecha | Cuándo SAP concilió/aplicó el recibo contra la factura. Puede llegar meses después del pago; el motor la conserva solo como dato informativo y **nunca** como fecha de pago. |
+| `es_anticipo` | **pedido** | booleano | Recibo fechado antes de la emisión de la factura que luego se concilió contra ella (pago a cuenta). Hoy el motor lo detecta por fecha y, según la regla aprobada vigente, **no** respalda el pago (`ANTICIPOS_RESPALDAN_PAGO`). |
+| `notas_credito[]` | **pedido** | lista | `{ id_factura, monto, fecha }`: notas de crédito conciliadas contra la factura. **No son pago**; el motor las muestra en el motivo de las facturas cerradas sin cobro íntegro por recibos. |
 | `actualizado_en` | sí | datetime UTC | |
 
 ### 2.4 Saldos vigentes

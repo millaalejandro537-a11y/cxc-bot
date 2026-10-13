@@ -248,7 +248,7 @@ def _evaluate_payment_semaphore(route_config, roster, evidence, decisions, plazo
                 "promedio_mora": round(r.promedio_mora, 2) if r.promedio_mora is not None else None,
                 "facturas_historial": r.historial_total, "facturas_evaluables": r.evaluables,
                 "alertas_cobro": len(r.alertas_cobro), "alertas_historicas": len(r.alertas_historicas),
-                "decision_gerencia": r.decision_gerencia is not None, "requiere_gerencia": r.requiere_gerencia,
+                "decision_gerencia": r.decision_gerencia is not None, "decision_aplicada": r.decision_aplicada, "requiere_gerencia": r.requiere_gerencia,
             })
         conteo: Dict[str, int] = {}
         for c in clientes:

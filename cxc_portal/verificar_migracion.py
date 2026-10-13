@@ -4,7 +4,10 @@ visita y, opcionalmente, el semaforo vigente comparado con el motor unico. No es
     python -m cxc_portal.verificar_migracion --estado DIR --ruta OCCIDENTE --json v3.json [--hojas HOJAS.xlsx] [--semaforo SEMAFORO.xlsx --datos DIR_SNAPSHOT]
 
 Las clasificaciones del snapshot son datos HISTORICOS del corte indicado: sirven para verificar reglas, no como saldos actuales.
-Codigo de salida: 0 = todo coincide; 1 = hay diferencias (se listan; nada se corrige).
+Regla vigente (2026-10-13): el resultado del sistema PREVALECE sobre el documento del semaforo. Una diferencia de clasificacion o de media entre el
+documento y el motor es INFORMATIVA (se lista para su revision; nada se corrige ni cuenta como falla). Solo la estructura (clientes, folders, zonas,
+orden, integridad, documentos) puede fallar.
+Codigo de salida: 0 = estructura correcta; 1 = hay fallas de estructura (se listan; nada se corrige).
 """
 
 from __future__ import annotations
@@ -71,9 +74,18 @@ def verificar(estado: Estado, route_id: str, archivo_json: Path, hojas: Path = N
                 doc[cod] = next((MAPA[k] for k in MAPA if txt.startswith(k)), "?")
         chk("el semáforo vigente trae los mismos clientes que la ruta", list(doc) == codigos, f"{len(doc)} vs {len(codigos)}")
         dif = [(c, doc.get(c), res[c].final) for c in codigos if doc.get(c) != res[c].final]
-        chk("motor único == semáforo vigente en todos los clientes", not dif, str(dif[:5]))
         for c, esperado, obtenido in dif:
-            resultado["informativas"].append(f"{c}: el documento dice {esperado}; el motor (reglas vigentes) dice {obtenido}")
+            resultado["informativas"].append(f"{c}: el documento dice {esperado}; el sistema (reglas vigentes) dice {obtenido} — prevalece el sistema")
+        salida(f"INFO clasificación: el sistema coincide con el documento en {len(codigos) - len(dif)} de {len(codigos)} clientes (prevalece el sistema)")
+        moras = {}
+        for i in range(cab + 1, ws.max_row + 1):
+            cod, m = ws.cell(i, 4).value, ws.cell(i, 9).value
+            if isinstance(cod, str) and re.fullmatch(r"C\d+", cod) and isinstance(m, (int, float)):
+                moras[cod] = float(m)
+        difm = [(c, moras[c], res[c].promedio_mora) for c in codigos
+                if res[c].promedio_mora is not None and c in moras and res[c].final == doc.get(c) and abs(moras[c] - res[c].promedio_mora) > 0.01]
+        for c, d_, m_ in difm:
+            resultado["informativas"].append(f"{c}: media de mora del documento {d_:.2f}; del sistema {m_:.2f} (misma clase; el sistema cuenta los recibos conciliados en SAP)")
         salida("   distribución del motor: " + str(dict(collections.Counter(res[c].final for c in codigos))))
     return resultado
 

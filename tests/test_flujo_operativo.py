@@ -114,14 +114,14 @@ def test_cambios_entre_salidas_generan_alertas_y_se_pueden_comparar(env):
     ctx.flujo.programar_salidas(ACTOR, "DEMO", ["2026-10-19", "2026-10-26"])
     ctx.flujo.ciclo_diario(hoy="2026-10-15")
     ger = {"id": None, "usuario": "ger1", "rol": "gerencia", "nombre": "Gerente"}
-    ctx.servicio.registrar_decision(ger, "C90004", "C", "Decisión de gerencia de prueba para el cambio.")
+    ctx.servicio.registrar_decision(ger, "C90008", "C", "Gerencia resuelve la falta de evidencia (prueba).")
     ctx.flujo.ciclo_diario(hoy="2026-10-22")
     s1, s2 = sorted(ctx.estado.listar_salidas("DEMO"), key=lambda s: s["fecha_salida"])
     cmp = ctx.estado.comparar_salidas(s1["id"], s2["id"])
     cam = {c["codigo"]: c for c in cmp["cambios"]}
-    assert cam["C90004"]["antes"] == "SOLO_CONTADO" and cam["C90004"]["ahora"] == "C" and cmp["sin_cambio"] >= 7
+    assert cam["C90008"]["antes"] == "REVISION_HUMANA" and cam["C90008"]["ahora"] == "C" and cmp["sin_cambio"] >= 7
     a = [x for x in ctx.estado.listar_alertas(["DEMO"], salida_id=s2["id"]) if x["tipo"] == "CAMBIO_CATEGORIA"]
-    assert len(a) == 1 and a[0]["codigo"] == "C90004"
+    assert len(a) == 1 and a[0]["codigo"] == "C90008"
     with pytest.raises(ErrorNegocio, match="misma ruta"):
         ctx.estado.comparar_salidas(s1["id"], ctx.estado.crear_salida(ACTOR, "LAS_VEGAS", "2026-10-20")["id"])
 

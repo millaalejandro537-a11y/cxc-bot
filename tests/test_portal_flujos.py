@@ -28,46 +28,62 @@ def _clientes(c, rid="DEMO"):
 def test_decision_de_gerencia_conserva_calculo_y_se_audita(env):
     s, ctx, _ = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
-    antes = _clientes(ger)["C90004"]["semaforo"]
-    assert antes["final"] == "SOLO_CONTADO" and antes["color_final"] == "ROJO" and antes["decision_gerencia"] is None          # contado = rojo automatico
-    st, _, d = ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Gerencia sustituye el resultado automático (prueba)."})
-    assert st == 201 and d["calculado_al_decidir"] == "SOLO_CONTADO" and d["actor"] == "Gerente Uno" and d["estado"] == "vigente"
-    des = _clientes(ger)["C90004"]["semaforo"]
-    assert des["calculado"] == "SOLO_CONTADO" and des["final"] == "C" and des["color_final"] == "AMARILLO"
+    antes = _clientes(ger)["C90008"]["semaforo"]
+    assert antes["final"] == "REVISION_HUMANA" and antes["decision_gerencia"] is None and antes["decision_aplicada"] is False       # sin evidencia: revision humana
+    st, _, d = ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "C", "motivo": "Gerencia resuelve la falta de evidencia (prueba)."})
+    assert st == 201 and d["calculado_al_decidir"] == "REVISION_HUMANA" and d["actor"] == "Gerente Uno" and d["estado"] == "vigente"
+    des = _clientes(ger)["C90008"]["semaforo"]
+    assert des["calculado"] == "REVISION_HUMANA" and des["final"] == "C" and des["color_final"] == "AMARILLO" and des["decision_aplicada"] is True
     assert des["promedio_mora"] == antes["promedio_mora"]  # el calculo automatico no cambia
-    assert ger.get("/api/clientes/C90004")[2]["historial_decisiones"][0]["motivo"].startswith("Gerencia sustituye")
-    assert any(e["accion"] == "decision.registrar" and e["referencia"] == "C90004" for e in ctx.estado.listar_auditoria())
+    assert ger.get("/api/clientes/C90008")[2]["historial_decisiones"][0]["motivo"].startswith("Gerencia resuelve")
+    assert any(e["accion"] == "decision.registrar" and e["referencia"] == "C90008" for e in ctx.estado.listar_auditoria())
+
+
+def test_no_se_piden_ni_aceptan_decisiones_sobre_categorias_que_el_sistema_determina(env):
+    s, ctx, _ = env
+    ger = cliente_con_login(s, "ger1", CLAVE_GER)
+    st, _, e = ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Intento de sustituir el contado automático."})
+    assert st == 409 and "sistema ya determina" in e["error"] and "prevalece" in e["error"]
+    sem = _clientes(ger)["C90004"]["semaforo"]
+    assert sem["final"] == "SOLO_CONTADO" and sem["color_final"] == "ROJO" and sem["decision_gerencia"] is None
+    assert ctx.estado.decisiones_vigentes() == {}                                                                       # nada se escribio
+    # una decision ANTERIOR (importada) sobre un cliente que el sistema determina se conserva, pero no cambia la clasificacion
+    ctx.estado.registrar_decision(ACTOR, "C90004", "C", "Decisión comercial anterior (importada).", route_id="DEMO", origen="archivo", fecha="2026-10-09")
+    ctx.servicio.invalidar()
+    ant = _clientes(ger)["C90004"]["semaforo"]
+    assert ant["final"] == "SOLO_CONTADO" and ant["decision_aplicada"] is False and ant["decision_gerencia"]["fecha"] == "2026-10-09"
+    assert any("solo para trazabilidad" in x for x in ant["explicacion"])
 
 
 def test_nueva_decision_sustituye_y_anular_vuelve_al_automatico(env):
     s, _, _ = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "Primera decisión de prueba."})
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "B", "motivo": "Segunda decisión de prueba."})
-    hist = ger.get("/api/decisiones?codigo=C90004")[2]["decisiones"]
+    ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "C", "motivo": "Primera decisión de prueba."})
+    ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "B", "motivo": "Segunda decisión de prueba."})
+    hist = ger.get("/api/decisiones?codigo=C90008")[2]["decisiones"]
     assert [h["estado"] for h in hist] == ["vigente", "sustituida"]  # nunca se borra el historial
-    assert ger.post("/api/decisiones/anular", {"codigo": "C90004", "motivo": "corta"})[0] == 400
-    assert ger.post("/api/decisiones/anular", {"codigo": "C90004", "motivo": "Se anula por error de captura."})[0] == 200
-    assert _clientes(ger)["C90004"]["semaforo"]["final"] == "SOLO_CONTADO"  # vuelve al calculo automatico
-    assert [h["estado"] for h in ger.get("/api/decisiones?codigo=C90004")[2]["decisiones"]] == ["anulada", "sustituida"]
+    assert ger.post("/api/decisiones/anular", {"codigo": "C90008", "motivo": "corta"})[0] == 400
+    assert ger.post("/api/decisiones/anular", {"codigo": "C90008", "motivo": "Se anula por error de captura."})[0] == 200
+    assert _clientes(ger)["C90008"]["semaforo"]["final"] == "REVISION_HUMANA"  # vuelve al calculo automatico (revision humana pendiente)
+    assert [h["estado"] for h in ger.get("/api/decisiones?codigo=C90008")[2]["decisiones"]] == ["anulada", "sustituida"]
 
 
 def test_validaciones_de_decision(env):
     s, _, _ = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
-    assert ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "ROJO", "motivo": "Motivo suficiente aquí."})[0] == 400
-    assert ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "C", "motivo": "corto"})[0] == 400
+    assert ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "ROJO", "motivo": "Motivo suficiente aquí."})[0] == 400
+    assert ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "C", "motivo": "corto"})[0] == 400
     assert ger.post("/api/decisiones", {"codigo": "C00000", "clasificacion_final": "C", "motivo": "Motivo suficiente aquí."})[0] == 404
 
 
 def test_las_decisiones_se_exportan_para_el_generador_de_rutas(env):
     s, _, tmp = env
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia (prueba)."})
+    ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia (prueba)."})
     data = json.loads((tmp / "datos" / "decisiones_gerencia.json").read_text(encoding="utf-8"))
-    assert data["C90004"]["clasificacion_final"] == "SOLO_CONTADO" and data["C90004"]["actor"] == "Gerente Uno"
+    assert data["C90008"]["clasificacion_final"] == "SOLO_CONTADO" and data["C90008"]["actor"] == "Gerente Uno"
     from cxc_bot.sap_exports import cargar_decisiones
-    assert cargar_decisiones(tmp / "datos")["C90004"].clasificacion_final == "SOLO_CONTADO"  # lo que lee CXC BOT
+    assert cargar_decisiones(tmp / "datos")["C90008"].clasificacion_final == "SOLO_CONTADO"  # lo que lee CXC BOT
 
 
 def test_persistencia_tras_reiniciar_decisiones_visitas_usuarios_y_rutas(tmp_path):
@@ -75,11 +91,11 @@ def test_persistencia_tras_reiniciar_decisiones_visitas_usuarios_y_rutas(tmp_pat
     s = Servidor(ctx)
     ger = cliente_con_login(s, "ger1", CLAVE_GER)
     ven = cliente_con_login(s, "ven1", CLAVE_VEN)
-    ger.post("/api/decisiones", {"codigo": "C90004", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia (prueba)."})
+    ger.post("/api/decisiones", {"codigo": "C90008", "clasificacion_final": "SOLO_CONTADO", "motivo": "Aprobado por gerencia (prueba)."})
     ven.post("/api/visitas", {"ruta": "DEMO", "fecha_salida": "2026-10-13", "codigo": "C90001", "estado": "visitada_firmada"})
     s.cerrar()
     est = Estado(tmp_path / "estado" / "portal.sqlite3")  # "reinicio": todo se reconstruye desde el archivo de la BD propia
-    assert est.decisiones_vigentes()["C90004"]["clasificacion_final"] == "SOLO_CONTADO"
+    assert est.decisiones_vigentes()["C90008"]["clasificacion_final"] == "SOLO_CONTADO"
     assert est.listar_visitas(route_id="DEMO")[0]["estado"] == "visitada_firmada"
     assert {u["usuario"] for u in est.listar_usuarios()} >= {"admin1", "ger1", "ven1", "ven2"}
     assert "DEMO" in {r["route_id"] for r in est.listar_rutas()}

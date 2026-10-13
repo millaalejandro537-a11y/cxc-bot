@@ -78,7 +78,7 @@ def test_las_decisiones_de_gerencia_se_aplican_sin_borrar_el_calculo(routes_root
     r = _correr(routes_root, sap_source, history, catalog, calendar, payment_evidence=Evidencia((90,) * 5), payment_decisions=dec).routes[0]
     por_cod = {c["codigo"]: c for c in r.semaphore["clientes"]}
     assert por_cod[cod]["calculado"] == ps.SOLO_CONTADO and por_cod[cod]["final"] == ps.SOLO_CONTADO
-    assert por_cod[cod]["color_final"] == "ROJO" and por_cod[cod]["decision_gerencia"]
+    assert por_cod[cod]["color_final"] == "ROJO" and por_cod[cod]["decision_gerencia"] and por_cod[cod]["decision_aplicada"] is False  # solo trazabilidad
     otros = [c for k, c in por_cod.items() if k != cod]
     assert otros and all(c["final"] == ps.SOLO_CONTADO and not c["decision_gerencia"] for c in otros)       # contado = rojo automatico, sin decision
 
