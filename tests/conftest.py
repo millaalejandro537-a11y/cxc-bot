@@ -10,16 +10,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from cxc_bot.config import load_route_config  # noqa: E402
 from cxc_bot.data_source import LocalMockDataSource  # noqa: E402
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-FIXTURE_BASE = FIXTURES_DIR / "CORTES_septiembre_original.xlsx"
+from synthetic_fixtures import build_cortes_base  # noqa: E402
 
 
-@pytest.fixture(scope="session", autouse=True)
-def ensure_fixture_copy():
-    """Usa el fixture local; nunca accede a archivos personales del host."""
-    if not FIXTURE_BASE.is_file():
-        pytest.fail("Falta tests/fixtures/CORTES_septiembre_original.xlsx; restaurar el fixture de pruebas.")
-    yield FIXTURE_BASE
+@pytest.fixture(scope="session")
+def ensure_fixture_copy(tmp_path_factory):
+    """Libro base SINTETICO (ver tests/synthetic_fixtures.py): la suite no necesita ni lee datos SAP privados."""
+    return build_cortes_base(tmp_path_factory.mktemp("base_sintetica") / "CORTES_septiembre_sintetico.xlsx")
 
 
 @pytest.fixture
@@ -37,6 +34,6 @@ def cortes_config():
 
 @pytest.fixture
 def baseline_sap_records(ensure_fixture_copy):
-    """Los registros SAP reales embebidos en Hoja2 del archivo de referencia,
+    """Los registros SAP sinteticos embebidos en Hoja2 del libro base,
     usados como punto de partida realista para las pruebas."""
     return LocalMockDataSource(ensure_fixture_copy, sheet_name="Hoja2").fetch_clients()

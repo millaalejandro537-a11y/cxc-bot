@@ -12,6 +12,7 @@ from cxc_bot import validators
 from cxc_bot.excel_service import edit_route, generate_route
 from cxc_bot.models import SapClientRecord
 from cxc_bot.route_engine import AddClient, RemoveClient
+from synthetic_fixtures import nombre_sintetico
 
 
 def test_generated_file_has_calculated_names_and_saldos(base_file, cortes_config, baseline_sap_records, tmp_path):
@@ -29,7 +30,7 @@ def test_generated_file_has_calculated_names_and_saldos(base_file, cortes_config
     wb = openpyxl.load_workbook(output, data_only=True)
     ws = wb["CORTES"]
 
-    assert ws["C8"].value == "CLIENTE SINTETICO C11098"
+    assert ws["C8"].value == nombre_sintetico("C11098")
     assert isinstance(ws["E8"].value, (int, float))
     assert ws["E8"].value == 0
 
@@ -62,7 +63,7 @@ def test_all_rows_and_total_have_calculated_values(base_file, cortes_config, bas
     total = ws["E40"].value
     assert isinstance(total, (int, float))
     assert total == pytest.approx(expected_total, abs=0.01)
-    assert total == pytest.approx(38301.0, abs=0.01)  # suma real del archivo piloto
+    assert total == pytest.approx(41021.12, abs=0.01)  # suma fija del libro base SINTETICO (tests/synthetic_fixtures.py)
 
 
 def test_formatting_untouched_by_cache_injection(base_file, cortes_config, baseline_sap_records, tmp_path):
@@ -139,7 +140,7 @@ def test_edit_route_also_has_calculated_values(base_file, cortes_config, baselin
 
     wb = openpyxl.load_workbook(edited, data_only=True)
     ws = wb["CORTES"]
-    assert ws["C8"].value == "CLIENTE SINTETICO C11098"
+    assert ws["C8"].value == nombre_sintetico("C11098")
     assert isinstance(ws["E39"].value, (int, float))  # ultima fila tras eliminar una
     total_row = 8 + 31
     assert isinstance(ws[f"E{total_row}"].value, (int, float))

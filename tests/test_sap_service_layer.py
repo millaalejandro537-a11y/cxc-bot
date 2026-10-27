@@ -151,10 +151,10 @@ class _Sched(ScheduleSource):
 
 
 def _run(tmp_path, ds, **kw):
-    import shutil
+    from synthetic_fixtures import build_cortes_base
     root = tmp_path / "RUTA VENDEDORES" / "Erick Brizuela" / "Cortes"
     root.mkdir(parents=True)
-    shutil.copy2("tests/fixtures/CORTES_septiembre_original.xlsx", root / "CORTES septiembre.xlsx")
+    build_cortes_base(root / "CORTES septiembre.xlsx")
     bh = BusinessHistoryStore(tmp_path / "b.sqlite3")
     res = process_due_routes(
         schedule_source=_Sched(), catalog=VendorCatalog.load(), calendar=BusinessCalendar(),
