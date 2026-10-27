@@ -2,6 +2,8 @@
 
 import http.client
 import json
+import os
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +17,14 @@ CLAVE_ADMIN = "Admin-Prueba#2026x"
 CLAVE_GER = "Gerencia-Prueba#2026x"
 CLAVE_VEN = "Vendedor-Prueba#2026x"
 CLAVE_VEN2 = "Vendedor2-Prueba#2026x"
+def ruta_reporting_core() -> Path:
+    """`cxc-reporting-core/src` sin rutas absolutas: CXC_REPORTING_SRC o `~/Documents/Trabajo-Sync/Cosprobell/cxc-reporting-core/src`
+    (misma ruta relativa al HOME en Windows y macOS). Se evita escribir bytecode porque esa carpeta esta sincronizada."""
+    sys.dont_write_bytecode = True
+    explicita = os.environ.get("CXC_REPORTING_SRC")
+    return Path(explicita) if explicita else Path.home() / "Documents" / "Trabajo-Sync" / "Cosprobell" / "cxc-reporting-core" / "src"
+
+
 ACTOR = {"id": None, "usuario": "test", "rol": "admin", "nombre": "test"}
 
 

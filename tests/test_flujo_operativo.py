@@ -12,7 +12,7 @@ import pytest
 
 from cxc_portal.estado import ErrorNegocio
 from cxc_portal.flujo import FlujoOperativo, NotificadorSimulado, huella_excel
-from tests.portal_helpers import ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, CLAVE_VEN2, FuenteApta, Servidor, cliente_con_login, crear_entorno
+from tests.portal_helpers import ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, CLAVE_VEN2, FuenteApta, Servidor, cliente_con_login, crear_entorno, ruta_reporting_core
 
 FIXTURE = Path("tests/fixtures/rutas_reales/LAS VEGAS MAYO.xlsx")
 HOY = {"d": date(2026, 10, 12)}
@@ -276,7 +276,7 @@ def test_dashboard_usa_cxc_reporting_core_para_la_cartera_cuando_esta_disponible
 
     from cxc_portal import dashboard as dash
     from cxc_portal.reporting_bridge import ReportingNoDisponible, ReportingService
-    src = Path(r"C:\Users\LTP\Documents\Trabajo-Sync\Cosprobell\cxc-reporting-core\src")
+    src = ruta_reporting_core()
     if not (src / "cxc_reporting").is_dir():
         pytest.skip("cxc-reporting-core no está disponible en este equipo")
     monkeypatch.setenv("CXC_REPORTING_SRC", str(src))

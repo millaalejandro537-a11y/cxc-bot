@@ -7,9 +7,9 @@ import openpyxl
 import pytest
 
 from cxc_portal.estado import Estado
-from tests.portal_helpers import (ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, Servidor, cliente_con_login, crear_entorno)
+from tests.portal_helpers import (ACTOR, CLAVE_ADMIN, CLAVE_GER, CLAVE_VEN, Servidor, cliente_con_login, crear_entorno, ruta_reporting_core)
 
-CORE_SRC = Path(r"C:\Users\LTP\Documents\Trabajo-Sync\Cosprobell\cxc-reporting-core\src")
+CORE_SRC = ruta_reporting_core()
 
 
 @pytest.fixture()
