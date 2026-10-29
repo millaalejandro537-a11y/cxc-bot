@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -324,6 +325,15 @@ def sap_lookup_map_from_sheet(ws_sap: Worksheet, config: RouteConfig) -> Dict[st
     return lookup
 
 
+_IFERROR_TEXTO = re.compile(r'^=\s*IFERROR\(.*,\s*"([^"]*)"\s*\)\s*$', re.IGNORECASE | re.DOTALL)
+
+
+def _iferror_fallback(formula) -> Optional[str]:
+    """Texto de reserva de una formula `=IFERROR(<expr>,"texto")`; None si la formula no lo tiene (o no hay formula)."""
+    m = _IFERROR_TEXTO.match(formula or "")
+    return m.group(1) if m else None
+
+
 def compute_cached_values(
     config: RouteConfig,
     roster: List[ClientEntry],
@@ -344,9 +354,17 @@ def compute_cached_values(
         saldo_ref = f"{config.saldo_col}{row}"
         match = sap_lookup.get(_lookup_key(entry.codigo))
         if match is None:
-            cells[name_ref] = ("e", NA_ERROR)
-            cells[saldo_ref] = ("e", NA_ERROR)
-            total_is_error = True
+            # Codigo ausente de SAP. Se cachea lo mismo que calcularia Excel: una celda de nombre literal (nombre propio de la ruta) no
+            # tiene formula y no se toca; con IFERROR(...,"texto") el resultado es ese texto (SUM lo ignora); sin IFERROR es #N/A.
+            if not getattr(entry, "nombre_ruta", None):
+                nombre_fb = _iferror_fallback(config.name_formula)
+                cells[name_ref] = ("str", nombre_fb) if nombre_fb is not None else ("e", NA_ERROR)
+            saldo_fb = _iferror_fallback(config.saldo_formula)
+            if saldo_fb is not None:
+                cells[saldo_ref] = ("str", saldo_fb)
+            else:
+                cells[saldo_ref] = ("e", NA_ERROR)
+                total_is_error = True
         else:
             nombre, saldo = match
             if not getattr(entry, "nombre_ruta", None):  # con nombre propio de ruta la celda es literal: no hay formula que cachear
