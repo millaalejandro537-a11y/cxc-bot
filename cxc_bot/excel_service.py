@@ -190,6 +190,28 @@ def read_roster(ws: Worksheet, config: RouteConfig) -> List[ClientEntry]:
     return roster
 
 
+def _tomar_formato_bajo_el_total(ws: Worksheet, old_total_row: int):
+    """Antes de insertar/borrar filas: combinaciones y alturas de las filas desde el total hacia abajo (se desfasarian)."""
+    combinadas = [str(r) for r in ws.merged_cells.ranges if r.min_row >= old_total_row]
+    for ref in combinadas:
+        ws.unmerge_cells(ref)          # se retiran en su posicion original, con sus marcadores
+    alturas = {r: d.height for r, d in ws.row_dimensions.items() if r >= old_total_row and d.height is not None}
+    for r in alturas:
+        ws.row_dimensions[r].height = None
+    return combinadas, alturas
+
+
+def _reponer_formato_bajo_el_total(ws: Worksheet, tomado, old_total_row: int, delta: int) -> None:
+    combinadas, alturas = tomado
+    for r, h in alturas.items():
+        if r + delta >= 1:
+            ws.row_dimensions[r + delta].height = h
+    for ref in combinadas:
+        c1, r1, c2, r2 = openpyxl.utils.range_boundaries(ref)
+        if r1 + delta >= 1:
+            ws.merge_cells(start_row=r1 + delta, start_column=c1, end_row=r2 + delta, end_column=c2)
+
+
 def _rebuild_client_block(
     ws: Worksheet,
     config: RouteConfig,
@@ -201,11 +223,19 @@ def _rebuild_client_block(
 ) -> int:
     old_count = old_total_row - config.data_start_row
     new_count = len(new_roster)
+    delta = new_count - old_count
+
+    # openpyxl mueve valores y estilos al insertar/borrar filas, pero NO las celdas combinadas ni las alturas de fila: lo que el libro
+    # base tenga DEBAJO del total (p. ej. la leyenda de viñetas) debe acompañar al total, con su propio formato.
+    debajo = _tomar_formato_bajo_el_total(ws, old_total_row) if delta else None
 
     if new_count > old_count:
         ws.insert_rows(old_total_row, amount=new_count - old_count)
     elif new_count < old_count:
         ws.delete_rows(config.data_start_row + new_count, amount=old_count - new_count)
+
+    if debajo is not None:
+        _reponer_formato_bajo_el_total(ws, debajo, old_total_row, delta)
 
     new_total_row = config.data_start_row + new_count
 
