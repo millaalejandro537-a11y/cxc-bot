@@ -3,10 +3,12 @@
 Versión del contrato: **1.0 (borrador para revisión de BLC)** · 2026-10-11.
 Estado: **propuesta de lo que el Portal necesita leer.** No describe endpoints, tablas ni credenciales de BLC/Gelsyn porque **no los conocemos ni los inventamos**: BLC decide cómo exponerlo (vistas SQL de solo lectura, API GET, exportación), siempre que entregue estos datos con esta semántica. SAP Business One es la **fuente contable oficial**; el Portal nunca escribe en ella.
 
+> **Actualización (decisión canónica posterior, Issue #2):** el Portal consumirá **endpoints de solo lectura del Cosprobell Backend**. Donde este documento diga "credencial SELECT", "vista SQL" o acceso directo a la BD, léase: credencial/token de **solo lectura** para esos endpoints. No se propone SQL directo ni se modifica BLC, SAP ni Railway. El contrato de datos (§1–§4) no cambia.
+
 ## 0. Principios y separación
 | Lado | Contenido | Quién lo administra | Reglas |
 |---|---|---|---|
-| **BD de lectura empresarial** (SAP / Cosprobell BD / backend de Gelsyn) | Clientes, facturas, recibos, aplicaciones, saldos | **BLC** | El Portal usa una credencial **SELECT dedicada**, solo lectura. Prohibido crear objetos, escribir, o tocar esquemas, usuarios, variables o servicios de BLC. |
+| **BD de lectura empresarial** (SAP / Cosprobell BD / backend de Gelsyn) | Clientes, facturas, recibos, aplicaciones, saldos | **BLC** | El Portal usa una credencial **de solo lectura dedicada** (endpoints del Cosprobell Backend; antes se redactó como SELECT directo a BD). Prohibido crear objetos, escribir, o tocar esquemas, usuarios, variables o servicios de BLC. |
 | **Almacenamiento privado del Portal** (SQLite en volumen propio, cifrado en respaldos) | Usuarios/2FA, rutas, zonas, folders, decisiones de gerencia, salidas, evaluaciones, visitas, documentos, avisos, auditoría | Cosprobell | Nunca se mezcla con la BD empresarial ni se escribe en ella. Los datos del Portal no se sincronizan de vuelta a SAP. |
 El Portal consume el contrato mediante `cxc_portal/fuente_empresarial.py` (interfaz `Transporte` de solo lectura). Hoy solo existe `TransporteSimulado` (datos sintéticos); el transporte real lo escribirá el ingeniero con este contrato.
 
@@ -88,7 +90,7 @@ El Portal consume el contrato mediante `cxc_portal/fuente_empresarial.py` (inter
 | Datos desactualizados | Se usan para consulta con aviso; **no se publican documentos no-borrador**. |
 
 ## 5. Seguridad exigida a la fuente
-1. Credencial **SELECT dedicada**, de mínimo privilegio, distinta de cualquier usuario administrador. Si solo existe un administrador: **detener** y pedir la de lectura.
+1. Credencial **de solo lectura dedicada** (token de endpoints; antes: SELECT), de mínimo privilegio, distinta de cualquier usuario administrador. Si solo existe un administrador: **detener** y pedir la de lectura.
 2. Transporte cifrado (TLS) y, si es posible, lista de IP/origen permitido.
 3. Sin escritura posible con esa credencial (se verifica con `validar_fuente`: no expone métodos de escritura; la garantía real es el permiso del lado de BLC).
 4. Los secretos viven solo en las variables de entorno de la plataforma, nunca en el repositorio ni en el volumen de respaldos.
@@ -105,10 +107,10 @@ El Portal consume el contrato mediante `cxc_portal/fuente_empresarial.py` (inter
 - Que el vencimiento SAP sea la base del plazo (lo es la emisión + plazo de la ruta).
 
 ## 8. Preguntas abiertas para BLC
-1. ¿Vista SQL, API o exportación programada? ¿Paginación y límites?
+1. Endpoints del Cosprobell Backend (rutas, autenticación, paginación y límites) o exportación programada.
 2. ¿Hay cambios incrementales y marca de eliminados?
 3. Vendedor y zona: ¿del cliente o del documento? ¿Cómo se actualizan?
 4. Tipos de documento (NC, anticipos, pagos no aplicados) y monedas.
 5. Umbral de frescura aceptable y ventana de sincronización.
 6. Semántica exacta de `aplicado`, `saldo_abierto` y de las fechas contable/efectiva.
-7. Entorno de prueba y credencial SELECT; quién la emite y cómo se rota.
+7. Entorno de prueba y credencial de solo lectura; quién la emite y cómo se rota.

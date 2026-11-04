@@ -1,6 +1,6 @@
-# Plan: viñetas de semáforo dentro del Excel operativo (NO implementado)
+# Plan: viñetas de semáforo dentro del Excel operativo (parcialmente implementado, opt-in)
 
-Estado: **aprobado como siguiente fase; no implementado** (decisión 2026-10-09). El formato de los Excel operativos NO se modifica hasta que se apruebe esta fase.
+Estado (actualizado en la rama `feat/vinetas-digitales`, Issue #2): **implementado como OPT-IN, desactivado por defecto** (`cxc_bot/route_markers.py`, `excel_service.generate_route(markers=…)`, `validators.validate_vinetas`, parámetro `vinetas_excel` del Portal). **La celda A (Folder) sigue siendo una PROPUESTA, no una decisión confirmada**: no se activa en documentos operativos hasta contrastarla con el Excel aprobado. El resto de este documento es el plan original; los fragmentos superados están marcados.
 
 ## Objetivo
 Que `process-due-routes` (y la edición manual) pinten en la hoja de la ruta la viñeta de cada cliente con el semáforo de `cxc_bot/payment_semaphore.py`, preservando **exactamente** las dos hojas operativas y el formato aprobado de Las Vegas.
@@ -16,7 +16,7 @@ Que `process-due-routes` (y la edición manual) pinten en la hoja de la ruta la 
 2. **Módulo nuevo** `cxc_bot/route_markers.py` (puro + escritura acotada): recibe `RouteConfig`, el roster y `{codigo: ResultadoCliente}` y devuelve un mapa `fila → color`. Sin reglas propias: el color sale de `ResultadoCliente.color_final`; `PENDIENTE_GERENCIA`/`SIN_DATOS` se pintan **sin color** (nunca rojo sin decisión).
 3. **Integración en `excel_service.generate_route`** detrás de un parámetro opt-in (`markers=None` por defecto → comportamiento idéntico al actual). Solo toca el `PatternFill` de A{fila}; reutiliza el mismo flujo de copia→generación→validación→publicación atómica del runner.
 4. **Validación** (`validators.py`): comprobar que (a) siguen existiendo exactamente las hojas esperadas, (b) no cambió ninguna fórmula/valor/ancho respecto a la generación sin viñetas, (c) cada color de A coincide con el semáforo del cliente, (d) la leyenda existe y no se alteró.
-5. **Regla de seguridad**: la viñeta es una *propuesta pintada*; cualquier `SOLO_CONTADO`/rojo solo aparece si hay decisión de gerencia registrada (`decisiones_gerencia.json`). Las viñetas físicas siguen siendo decisión humana.
+5. **Regla de seguridad** *(fragmento SUPERADO)*: ~~cualquier `SOLO_CONTADO`/rojo solo aparece si hay decisión de gerencia registrada~~. **Regla vigente** (`payment_semaphore`): `CONTADO_AUTOMATICO=True` — el resultado Contado es ROJO automático sin aprobación adicional de gerencia — y `SISTEMA_PREVALECE=True`; las decisiones de gerencia solo resuelven lo que el sistema no determina (revisión humana / sin evidencia), que **nunca** recibe color de crédito. La viñeta digital es una propuesta pintada y **solo es definitiva con fuente validada** (`apta_para_publicar`); con snapshot/simulada queda PROVISIONAL y el Excel no se pinta. Las viñetas físicas siguen siendo decisión humana.
 
 ## Pruebas de regresión previstas
 - Generar con y sin `markers` y comparar celda por celda (valores, fórmulas, estilos excepto el relleno de A): idénticas.
