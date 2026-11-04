@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -189,6 +190,28 @@ def read_roster(ws: Worksheet, config: RouteConfig) -> List[ClientEntry]:
     return roster
 
 
+def _tomar_formato_bajo_el_total(ws: Worksheet, old_total_row: int):
+    """Antes de insertar/borrar filas: combinaciones y alturas de las filas desde el total hacia abajo (se desfasarian)."""
+    combinadas = [str(r) for r in ws.merged_cells.ranges if r.min_row >= old_total_row]
+    for ref in combinadas:
+        ws.unmerge_cells(ref)          # se retiran en su posicion original, con sus marcadores
+    alturas = {r: d.height for r, d in ws.row_dimensions.items() if r >= old_total_row and d.height is not None}
+    for r in alturas:
+        ws.row_dimensions[r].height = None
+    return combinadas, alturas
+
+
+def _reponer_formato_bajo_el_total(ws: Worksheet, tomado, old_total_row: int, delta: int) -> None:
+    combinadas, alturas = tomado
+    for r, h in alturas.items():
+        if r + delta >= 1:
+            ws.row_dimensions[r + delta].height = h
+    for ref in combinadas:
+        c1, r1, c2, r2 = openpyxl.utils.range_boundaries(ref)
+        if r1 + delta >= 1:
+            ws.merge_cells(start_row=r1 + delta, start_column=c1, end_row=r2 + delta, end_column=c2)
+
+
 def _rebuild_client_block(
     ws: Worksheet,
     config: RouteConfig,
@@ -200,11 +223,19 @@ def _rebuild_client_block(
 ) -> int:
     old_count = old_total_row - config.data_start_row
     new_count = len(new_roster)
+    delta = new_count - old_count
+
+    # openpyxl mueve valores y estilos al insertar/borrar filas, pero NO las celdas combinadas ni las alturas de fila: lo que el libro
+    # base tenga DEBAJO del total (p. ej. la leyenda de viñetas) debe acompañar al total, con su propio formato.
+    debajo = _tomar_formato_bajo_el_total(ws, old_total_row) if delta else None
 
     if new_count > old_count:
         ws.insert_rows(old_total_row, amount=new_count - old_count)
     elif new_count < old_count:
         ws.delete_rows(config.data_start_row + new_count, amount=old_count - new_count)
+
+    if debajo is not None:
+        _reponer_formato_bajo_el_total(ws, debajo, old_total_row, delta)
 
     new_total_row = config.data_start_row + new_count
 
@@ -324,6 +355,15 @@ def sap_lookup_map_from_sheet(ws_sap: Worksheet, config: RouteConfig) -> Dict[st
     return lookup
 
 
+_IFERROR_TEXTO = re.compile(r'^=\s*IFERROR\(.*,\s*"([^"]*)"\s*\)\s*$', re.IGNORECASE | re.DOTALL)
+
+
+def _iferror_fallback(formula) -> Optional[str]:
+    """Texto de reserva de una formula `=IFERROR(<expr>,"texto")`; None si la formula no lo tiene (o no hay formula)."""
+    m = _IFERROR_TEXTO.match(formula or "")
+    return m.group(1) if m else None
+
+
 def compute_cached_values(
     config: RouteConfig,
     roster: List[ClientEntry],
@@ -344,9 +384,17 @@ def compute_cached_values(
         saldo_ref = f"{config.saldo_col}{row}"
         match = sap_lookup.get(_lookup_key(entry.codigo))
         if match is None:
-            cells[name_ref] = ("e", NA_ERROR)
-            cells[saldo_ref] = ("e", NA_ERROR)
-            total_is_error = True
+            # Codigo ausente de SAP. Se cachea lo mismo que calcularia Excel: una celda de nombre literal (nombre propio de la ruta) no
+            # tiene formula y no se toca; con IFERROR(...,"texto") el resultado es ese texto (SUM lo ignora); sin IFERROR es #N/A.
+            if not getattr(entry, "nombre_ruta", None):
+                nombre_fb = _iferror_fallback(config.name_formula)
+                cells[name_ref] = ("str", nombre_fb) if nombre_fb is not None else ("e", NA_ERROR)
+            saldo_fb = _iferror_fallback(config.saldo_formula)
+            if saldo_fb is not None:
+                cells[saldo_ref] = ("str", saldo_fb)
+            else:
+                cells[saldo_ref] = ("e", NA_ERROR)
+                total_is_error = True
         else:
             nombre, saldo = match
             if not getattr(entry, "nombre_ruta", None):  # con nombre propio de ruta la celda es literal: no hay formula que cachear
