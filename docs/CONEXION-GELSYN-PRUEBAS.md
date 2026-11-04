@@ -26,7 +26,7 @@ Fuente: *Referencia técnica del backend Cosprobell* (Gelsyn, 4/11/2026, código
 * Decisión canónica (Issue #2): el Portal consume **endpoints de solo lectura** del backend.
 * La copia contiene tablas de acceso/sesiones/configuración; incluso un rol `SELECT` sobre `public` las expondría. Un rol acotado (§7) es la **vía de reserva**, solo si Gelsyn no puede levantar el backend de pruebas, y obliga a reimplementar en SQL la lógica de versión publicada (`activoId`) que hoy resuelve el backend.
 * El cliente y la configuración rechazan cualquier URL `postgres://` / `postgresql://` (también si se pega en la variable de la API key).
-* La URL recibida usa la cuenta administrativa `postgres`: **no debe usarse** para nada del Portal. Si viajó por chat/correo, considérese expuesta y pídase su **rotación** a Gelsyn.
+* La URL recibida usa la cuenta administrativa `postgres`: **no debe usarse** para nada del Portal. **Decisión vigente: NO se rota la contraseña PostgreSQL existente.** Eso no reduce las precauciones: se trata como secreto de alto riesgo; **no se copia** a documentos, Git, prompts, tickets, logs ni variables del Portal (que rechaza cualquier URL `postgres://`); solo la conservan quienes administran la base; el acceso del Portal es únicamente por la API key de solo lectura; y toda sospecha de filtración (o cambio de custodios) obliga a reabrir esta decisión. El riesgo residual de no rotar —quien tenga la URL tiene control total de la base de pruebas— queda aceptado y registrado aquí.
 
 ## 4. Credencial: qué pedir y cómo guardarla
 **Pedir a Gelsyn (una API key por entorno):** nombre de app dedicado (p. ej. `cxc-portal-pruebas`) incluido en `FINANZAS_APPS_AUTORIZADAS` del backend de pruebas; **alcance limitado a `GET /finanzas/*` y `/health`** (el documento solo describe claves "de alcance completo", que también abren endpoints operativos con `POST`; si no existe un alcance menor, pedirlo o aceptar el riesgo por escrito — el cliente del Portal solo emite `GET`, pero la clave en sí podría hacer más); sin permisos de puente (`BRIDGE_API_KEY` jamás); expiración/rotación definida; clave distinta de la de producción.
@@ -46,7 +46,7 @@ En Windows: variables de entorno del proceso o *Credential Manager*; en Railway:
 * **No aplica el contrato de su `CosprobellBackendAdapter`:** exige *partidas abiertas con `saldoAbierto` firmado* y *estado de sincronización*; **Gelsyn no ofrece ninguno de los dos** (las partidas no se importaron). Reutilizar ese adaptador tal cual haría fallar el corte. Opciones (decisión pendiente): (a) mapear facturas/pagos/aplicaciones/notas de crédito a la `FuenteEmpresarial` del Portal (`docs/CONTRATO-DATOS-BLC.md`), que es lo que necesita el semáforo; (b) más adelante, partidas abiertas cuando Gelsyn las importe, para la cartera del core.
 * La paginación de Gelsyn es por cursor en `meta.siguienteCursor` (anidado), distinta del `nextCursor` de primer nivel que espera el iterador del core: el bucle de páginas del transporte del Portal usará `get_json` del cliente y leerá el cursor de `meta`.
 
-## 5. Mapeo previsto Gelsyn → contrato del Portal (se confirma con el preflight; NO implementado aún)
+## 5. Mapeo Gelsyn → contrato del Portal (implementado con respuestas SINTÉTICAS en `cxc_portal/transporte_gelsyn.py`; se confirma con el preflight)
 | Portal (`CONTRATO-DATOS-BLC` §2) | Gelsyn (columna de la BD) | Observación |
 |---|---|---|
 | cliente: `codigo_sap`, `nombre`, `activo`, `vendedor_codigo`, `zona`, `moneda` | `cardCode`, `cardName`, `finActivo`/`valid`/`frozen`, `salesPersonCode`, `uZona`, `currency` | zona: solo `uZona` (las `*Financiera` son nulas) |
@@ -62,7 +62,7 @@ En Windows: variables de entorno del proceso o *Credential Manager*; en Railway:
 2. Una API key **dedicada, de solo lectura** y, si existe, con alcance limitado a `/finanzas/*` y `/health`; confirmación del nombre de la app autorizada y de su expiración.
 3. Un ejemplo **real (sin valores sensibles) de la respuesta** de `GET /finanzas/{clientes,facturas,pagos,aplicacionesPagos,notasCredito}?limit=1` y de `/finanzas/estado`: nombres exactos de campos, valores de `documentStatus`, semántica de `cancelled`/`cancelStatus`, formato de fechas y de importes (¿cadenas decimales?).
 4. Confirmar: ¿las fechas de documento son comerciales o instantes UTC?; ¿`docDate` del pago es la fecha contable?; ¿hay fecha de conciliación/aplicación?
-5. Rotar la credencial `postgres` si se compartió por un canal no seguro.
+5. (Sin acción de rotación: decisión vigente, ver §3.) Confirmar que `postgres` no se usa en ningún servicio del Portal ni se comparte fuera de quienes administran la base de pruebas.
 **Por nuestra parte:** guardar la clave como en §4; ejecutar `python -m cxc_portal.gelsyn_preflight` (≤ 7 GET, sin imprimir datos); si el veredicto es `APTO_PARA_MAPEO`, implementar el transporte (`Transporte` del contrato) con el mapeo de §5 y pasarlo por `python -m cxc_portal.validar_fuente`.
 **Validación contra SAP Business One (contabilidad, fuera del repo):**
 1. Controles por cliente desde SAP B1: saldo de cuenta y reporte de antigüedad (`controles_sap.json`: `por_cliente`, `total_global`).
@@ -84,4 +84,18 @@ GRANT SELECT ON clientes, vendedores, condiciones_pago, facturas, facturas_cuota
 Y con la lógica de versión (`finVersion = activoId` y `finanzas_normalizacion`) reimplementada en el lector. Esta vía no está construida.
 
 ## 8. Qué se preparó en el repositorio
-`cxc_portal/gelsyn_config.py` (configuración segura por variables de entorno, rechazo de URLs SQL, guardas pruebas/producción, redacción de la clave), `cxc_portal/gelsyn_preflight.py` (verificación mínima de solo lectura), `.env.example` (solo nombres), `.gitignore` (`.env*`, `*.pem`, `*.key`) y `tests/test_gelsyn_conexion.py` (24 pruebas con transporte falso: sin red ni credenciales reales).
+`cxc_portal/gelsyn_config.py` (configuración segura por variables de entorno, rechazo de URLs SQL, guardas pruebas/producción, redacción de la clave), `cxc_portal/gelsyn_preflight.py` (verificación mínima de solo lectura), `.env.example` (solo nombres), `.gitignore` (`.env*`, `*.pem`, `*.key`) `tests/test_gelsyn_conexion.py` (26 pruebas: configuración, preflight, `.env.example` versionado) y, en §9, `cxc_portal/transporte_gelsyn.py` con `tests/test_transporte_gelsyn.py` (45 pruebas con respuestas sintéticas). Ninguna usa red, credenciales ni datos reales.
+
+## 9. Transporte `TransporteGelsyn` (implementado, probado solo con respuestas sintéticas)
+`cxc_portal/transporte_gelsyn.py` implementa el protocolo `Transporte` de `FuenteEmpresarial` sobre el `ReadOnlyApiClient` de cxc-reporting-core (solo GET). Lee `clientes`, `facturas`, `pagos` y `aplicacionesPagos` con `limit=100`, paginación por `meta.siguienteCursor` **conservando `version`** (si cambia a mitad, la carga se rechaza) y una pasada por carga.
+| Criterio | Comportamiento |
+|---|---|
+| Importes | texto decimal exacto, ≤ 6 decimales; solo se corrigen residuos de coma flotante compatibles con 6 decimales (`583.6900000000001` → `583.69`); un 7.º decimal real (`10.1234567`) se rechaza; nunca pasa por `float` en el transporte |
+| Nulos | un saldo de control nulo **no genera fila** (jamás cero); una fecha ausente o ambigua hace inválida la fila (se aparta y se reporta) |
+| Fechas | fecha sola/medianoche = fecha comercial; instante con zona → hora de Honduras (UTC−6); hora sin zona distinta de medianoche = ambigua (no se adivina) |
+| Cancelaciones | cancelado o documento de cancelación → se excluye y se cuenta; `cancelled` indefinido **no** es "no cancelado": la fila se emite inválida y la fuente la aparta y la reporta |
+| Moneda | se conserva por documento y cliente; varias monedas en la carga → advertencia (no se suman) |
+| Corte y versión | `fecha_corte` = la **menor** `ultimaCargaCompleta` entre entidades (fecha comercial); `completo` solo si todas tienen carga completa; las versiones por entidad quedan en `sistema_origen` y en `versiones` |
+| Aplicaciones | solo las no canceladas con `facturaDocEntry`; las demás se cuentan y no respaldan ningún pago |
+**Sin partidas ni conciliaciones, nunca vigente:** el transporte declara `apto_para_publicar = False` (`MOTIVO_NO_APTO`); `FuenteEmpresarial` lo respeta (`apta_para_publicar` falso), lo registra en los problemas de calidad, y en entorno `pruebas` se rotula `EMPRESARIAL_PRUEBAS`, `en_vivo = False` ("copia de un respaldo, no es dato vivo ni validado"). Las viñetas quedan PROVISIONALES y el Excel solo BORRADOR. El saldo es el de **control** de SAP (`currentAccountBalance`) y la diferencia con Σ(total − pagado) se reporta, nunca se corrige.
+**Limitaciones / pendientes con Gelsyn:** forma exacta de `data` y valores de `documentStatus`, `cancelled`/`cancelStatus` e `invoiceType` (hoy se aceptan `bost_Open/bost_Close` y `tYES/tNO`; lo demás es indeterminado); fecha efectiva y de conciliación no existen; notas de crédito **no** se mapean aún (no son pago y sus aplicaciones manuales no son reconstruibles); `FuenteEmpresarial` convierte importes a `float` internamente (el motor y el semáforo dependen de fechas, no de importes; los saldos se muestran con 2 decimales).

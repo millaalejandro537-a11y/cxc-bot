@@ -23,6 +23,7 @@ from .fuentes import TIPO_VIVA
 
 CONTRATO_VERSION = "1.0"          # version mayor del contrato; un cambio de mayor exige revisar el adaptador
 TIPO_SIMULADA = "EMPRESARIAL_SIMULADA"
+TIPO_PRUEBAS = "EMPRESARIAL_PRUEBAS"
 TOL = 0.01
 
 REQ_CLIENTE = ("codigo_sap", "nombre")
@@ -83,9 +84,11 @@ class FuenteEmpresarial:
         self.transporte, self._hoy, self.max_edad_dias = transporte, hoy, max_edad_dias
         self.reintentos, self._pausa, self.tolerancia_invalidos = reintentos, pausa, tolerancia_invalidos
         simulado = bool(getattr(transporte, "simulado", True))
-        self.tipo = TIPO_SIMULADA if simulado else TIPO_VIVA
-        self.en_vivo = not simulado
-        self.etiqueta = ("FUENTE EMPRESARIAL SIMULADA (datos sintéticos): no representa saldos reales" if simulado else "Fuente empresarial (solo lectura)")
+        pruebas = (not simulado) and getattr(transporte, "entorno", None) == "pruebas"      # copia de pruebas: datos reales de un respaldo, NO vivos
+        self.tipo = TIPO_SIMULADA if simulado else TIPO_PRUEBAS if pruebas else TIPO_VIVA
+        self.en_vivo = not simulado and not pruebas
+        self.etiqueta = ("FUENTE EMPRESARIAL SIMULADA (datos sintéticos): no representa saldos reales" if simulado else
+                         "Cosprobell Backend de PRUEBAS (copia de un respaldo): no es dato vivo ni validado" if pruebas else "Fuente empresarial (solo lectura)")
         self.fecha_corte: date = date.min
         self._d: Optional[dict] = None          # ultima carga VALIDA
         self.version_datos = 0                  # +1 cada vez que una carga valida REEMPLAZA a la anterior: identidad de los datos para invalidar derivados
@@ -234,6 +237,9 @@ class FuenteEmpresarial:
             problemas.append(f"{len(difs)} cliente(s) con saldo del origen distinto de la suma de sus facturas abiertas (puede haber notas de crédito, anticipos o pagos sin aplicar): se reporta, no se corrige")
         if sin_saldo:
             problemas.append(f"{len(sin_saldo)} cliente(s) con facturas abiertas pero sin saldo provisto: se usa la suma de facturas y se marca")
+        sin_control = sorted(k for k in clientes if k not in saldos)
+        if saldos and sin_control:   # el origen entrega saldos de control pero faltan algunos: un nulo NO es cero, y el valor mostrado no esta certificado
+            problemas.append(f"{len(sin_control)} cliente(s) sin saldo de control provisto (nulo, no cero): su saldo mostrado es la suma de sus documentos abiertos o 0 si no tienen, y NO está certificado")
         # construir FacturaSAP
         lista: Dict[str, List[FacturaSAP]] = {}
         for idf, f in facturas.items():
@@ -244,6 +250,9 @@ class FuenteEmpresarial:
         calidad = {"estado": estado, "problemas": problemas, "filas_descartadas": descartes, "diferencias_saldo": difs, "sin_saldo_provisto": sin_saldo,
                    "edad_dias": edad, "vigente": 0 <= edad <= self.max_edad_dias, "filas": total_filas, "version_contrato": meta.get("version_contrato"),
                    "sistema_origen": meta.get("sistema_origen")}
+        if not getattr(self.transporte, "apto_para_publicar", True):
+            problemas.append(getattr(self.transporte, "motivo_no_apto", "El transporte declara que la fuente no es apta para publicar."))
+        problemas.extend(list(getattr(self.transporte, "advertencias", []) or []) + [f"{k}: {v} excluido(s)" for k, v in (getattr(self.transporte, "excluidos", {}) or {}).items()])
         if not calidad["vigente"]:
             calidad["problemas"] = problemas + [f"Datos de hace {edad} día(s); máximo aceptado {self.max_edad_dias}: la fuente NO es apta para publicar."]
         return {"fecha_corte": corte, "calidad": calidad,
@@ -253,7 +262,8 @@ class FuenteEmpresarial:
     @property
     def apta_para_publicar(self) -> bool:
         """Solo una fuente en vivo REAL (no simulada), cargada, vigente y sin bloqueos puede respaldar documentos no-borrador."""
-        return bool(self.en_vivo and self._d is not None and self._vigente_hoy() and self.calidad.get("estado") in ("OK", "CON_ADVERTENCIAS"))
+        return bool(self.en_vivo and self._d is not None and self._vigente_hoy() and self.calidad.get("estado") in ("OK", "CON_ADVERTENCIAS")
+                    and getattr(self.transporte, "apto_para_publicar", True))     # p. ej. Gelsyn sin partidas abiertas/conciliaciones: nunca vigente
 
     def _vigente_hoy(self) -> bool:
         """Vigencia EVALUADA AHORA (no la del momento de la carga): un proceso largo no puede seguir publicando con datos que ya envejecieron."""

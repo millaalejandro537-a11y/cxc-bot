@@ -165,3 +165,23 @@ def test_cli_sin_variables_falla_de_forma_segura(monkeypatch, capsys):
         monkeypatch.delenv(n, raising=False)
     assert gp.main() == 2
     assert "Faltan variables" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------------------------------------ plantilla de variables versionada, secretos ignorados
+def _git(*args):
+    import subprocess
+    return subprocess.run(["git", *args], capture_output=True, text=True)
+
+
+def test_env_example_esta_versionado_y_no_lo_ignora_la_regla_env_asterisco():
+    assert _git("ls-files", "--error-unmatch", ".env.example").returncode == 0                  # esta bajo control de versiones
+    assert _git("check-ignore", "-q", ".env.example").returncode == 1                           # 1 = NO ignorado (la excepcion !.env.example funciona)
+    for secreto in (".env", ".env.local", ".env.production", ".env.gelsyn", "clave.pem", "clave.key"):
+        assert _git("check-ignore", "-q", secreto).returncode == 0, secreto                     # 0 = ignorado
+
+
+def test_env_example_solo_contiene_nombres_de_variables_sin_valores():
+    from pathlib import Path
+    lineas = [x.strip() for x in Path(".env.example").read_text(encoding="utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
+    assert lineas and all(x.endswith("=") for x in lineas), lineas                              # NOMBRE= y nada mas
+    assert {x[:-1] for x in lineas} >= {gc.ENV_BASE_URL, gc.ENV_API_KEY, gc.ENV_ENTORNO}
