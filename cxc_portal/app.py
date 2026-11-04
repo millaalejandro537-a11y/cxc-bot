@@ -44,13 +44,15 @@ REGLAS = {
     "vigencia": "Hub Cosprobell CxC — Principal, decisiones 08–09/10/2026",
     "ventana_facturas": sm.VENTANA_FACTURAS, "minimo_historial": sm.MIN_HISTORIAL,
     "umbrales_media_mora": {"A": f"≤ {sm.TOLERANCIA_A}", "B": f"> {sm.TOLERANCIA_A} y ≤ {sm.LIMITE_B}", "C": f"> {sm.LIMITE_B} y ≤ {sm.LIMITE_C}",
-                            "CANDIDATO_SOLO_CONTADO": f"> {sm.LIMITE_C}"},
+                            (sm.SOLO_CONTADO if sm.CONTADO_AUTOMATICO else sm.CANDIDATO_SOLO_CONTADO): f"> {sm.LIMITE_C}"},
     "abiertas_entran_a_la_media_si": f"mora > {sm.ABIERTA_MORA_MINIMA} días", "plazos": {"foranea": sm.PLAZO_FORANEA, "local": sm.PLAZO_LOCAL},
     "alerta_por_factura": f"mora > {sm.ALERTA_FACTURA} días: abiertas = alerta operativa de cobro; pagadas = alerta histórica de comportamiento (nunca cobro pendiente)",
     "notas": ["Se evalúan las 10 facturas más recientes (emisión DESC, desempate número DESC).", "0–3 facturas en todo el historial: cliente de prueba (blanca).",
               "Mora = max(0, último recibo contable (o corte si está abierta) − emisión − plazo de la ruta). El vencimiento SAP se conserva, no es la base.",
-              "Más de 60 días es solo candidato a solo contado: la viñeta roja la decide gerencia.",
-              "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha; el cálculo automático no se altera."],
+              "Promedio de mora de más de 60 días = solo contado: viñeta ROJA automática (regla vigente), sin aprobación adicional de gerencia.",
+              "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha como trazabilidad. El sistema prevalece: una decisión solo resuelve lo que el sistema no puede clasificar (revisión humana / sin evidencia)."
+              if sm.SISTEMA_PREVALECE else "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha; el cálculo automático no se altera."],
+    "vigentes": {"CONTADO_AUTOMATICO": sm.CONTADO_AUTOMATICO, "SISTEMA_PREVALECE": sm.SISTEMA_PREVALECE, "ANTICIPOS_RESPALDAN_PAGO": sm.ANTICIPOS_RESPALDAN_PAGO},
 }
 
 
@@ -832,7 +834,7 @@ def avisos(ctx: Contexto, p: Peticion):
         raise ErrorNegocio("Ruta no encontrada.", 404)
     sid = p.q("salida")
     filas = ctx.estado.listar_alertas([rid] if rid else list(vis), p.q("estado") or None, p.q("tipo") or None, int(sid) if sid.isdigit() else None)
-    return Respuesta(datos={"avisos": filas, "nota": "Avisos generados por el sistema: informan, no deciden. Los candidatos a solo contado siempre requieren decisión de gerencia."})
+    return Respuesta(datos={"avisos": filas, "nota": "Avisos generados por el sistema: informan, no deciden. Un resultado en contado es ROJO automático; gerencia decide solo donde el sistema no puede clasificar (revisión humana / sin evidencia)."})
 
 
 @endpoint("POST", "/api/avisos/{aid}/atender", roles=LECTURA_GLOBAL)

@@ -77,7 +77,7 @@ export function Avisos({ rutas, user }) {
   return (
     <>
       <h2>Avisos</h2>
-      <p className="muted small">Los avisos informan; no cambian clasificaciones. Los candidatos a solo contado siempre requieren la decisión de gerencia.</p>
+      <p className="muted small">Los avisos informan; no cambian clasificaciones. Un resultado en contado es ROJO automático (sin aprobación adicional); gerencia revisa solo los casos sin base para clasificar.</p>
       {msg && <p className="aviso">{msg}</p>}
       <div className="filtros"><select value={filtro} onChange={(e) => setFiltro(e.target.value)} aria-label="Estado"><option value="nueva">Nuevos</option><option value="vista">Vistos</option><option value="cerrada">Cerrados</option><option value="">Todos</option></select></div>
       <div className="tablewrap"><table>
@@ -107,7 +107,7 @@ function Parametros() {
   const guardar = async (clave, valor) => { setMsg(null); try { await post('/admin/configuracion', { clave, valor: Number(valor) }); setMsg('Parámetro guardado (queda auditado).'); cargar() } catch (e) { setMsg(e.message) } }
   if (!c) return null
   return (
-    <details><summary><b>Parámetros de avisos y oportunidades</b></summary>
+    <details><summary><b>Parámetros (avisos, oportunidades y viñetas del Excel)</b></summary>
       {msg && <p className="aviso">{msg}</p>}
       {Object.keys(c.valores).map((k) => (
         <form key={k} className="form" onSubmit={(e) => { e.preventDefault(); guardar(k, e.target.elements.v.value) }}>
