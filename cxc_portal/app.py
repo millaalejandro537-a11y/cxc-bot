@@ -900,7 +900,13 @@ def dashboard_mio(ctx: Contexto, p: Peticion):
 def salida_impresion(ctx: Contexto, p: Peticion):
     """Prepara (idempotente) las solicitudes de impresion de la salida: hoja de visita vinculada y Excel vigente si NO es borrador. Solo registra."""
     _salida_visible(ctx, p)
-    return Respuesta(datos=ctx.flujo.preparar_impresion(p.usuario, int(p.params["sid"])))
+    try:
+        copias = int(p.cuerpo.get("copias") or 1)
+    except (TypeError, ValueError) as e:
+        raise ErrorNegocio("copias debe ser un número entero (1 a 20).") from e
+    if not 1 <= copias <= 20:
+        raise ErrorNegocio("Copias fuera de rango (1 a 20).")
+    return Respuesta(datos=ctx.flujo.preparar_impresion(p.usuario, int(p.params["sid"]), copias))
 
 
 @endpoint("POST", "/api/agente/{iid}/archivo", roles=None, publico=True)

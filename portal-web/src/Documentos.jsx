@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { api, post } from './api.js'
 import { fdate } from './ui.jsx'
 
-const COLOR = { VERDE: '#34a853', AMARILLA: '#facc15', AZUL: '#2563eb', BLANCA: '#ffffff', CANDIDATO: '#f4a6a6', REVISAR: '#c4b5fd', ROJA: '#dc2626' }
+// [fondo, texto]: texto blanco sobre los fondos oscuros (contraste >= 4.5:1 a 11 px); ROJO = solo contado (resultado del sistema, regla vigente)
+const COLOR = {
+  VERDE: ['#34a853', '#000000'], AMARILLA: ['#facc15', '#000000'], AZUL: ['#2563eb', '#ffffff'], BLANCA: ['#ffffff', '#000000'],
+  CANDIDATO: ['#f4a6a6', '#000000'], REVISAR: ['#c4b5fd', '#000000'], ROJA: ['#dc2626', '#ffffff'], ROJO: ['#dc2626', '#ffffff'],
+}
 
 // Vista de IMPRESIÓN: reproduce el diseño aprobado (una página por hoja). Se imprime/guarda como PDF con el navegador (Windows, Mac, iPhone, Android).
 export function HojasParaImprimir({ doc, ruta, vendedor, onCerrar }) {
@@ -21,7 +25,7 @@ export function HojasParaImprimir({ doc, ruta, vendedor, onCerrar }) {
           <table>
             <thead><tr><th>COLOR</th><th>CÓDIGO SAP</th><th>SALÓN / CLIENTE</th><th>ENCARGADA / TELÉFONO</th><th>COBRO</th><th>VENTA (L)</th><th>OBSERVACIONES</th><th>FIRMA</th></tr></thead>
             <tbody>{h.clientes.map((x) => (
-              <tr key={x.codigo}><td style={{ background: COLOR[x.color_documento] || '#fff' }}>{x.color_documento}</td><td>{x.codigo}</td><td>{x.nombre}</td><td /><td /><td /><td /><td /></tr>
+              <tr key={x.codigo}><td style={{ background: (COLOR[x.color_documento] || ['#ffffff'])[0], color: (COLOR[x.color_documento] || [0, '#000000'])[1] }}>{x.color_documento}</td><td>{x.codigo}</td><td>{x.nombre}</td><td /><td /><td /><td /><td /></tr>
             ))}</tbody>
           </table>
           <p className="campos pie">RESUMEN DE SALIDA: VISITADOS ___ &nbsp; NO VISITADOS ___ &nbsp; OBSERVACIONES GENERALES: ______________________</p>
