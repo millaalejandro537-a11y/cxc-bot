@@ -16,3 +16,10 @@ n8n/.env
 data/portal/
 portal-web/node_modules/
 portal-web/dist/
+
+# Secretos locales (solo existen .env.example con nombres de variables)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
