@@ -12,7 +12,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 sys
 .top { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .brand { font-weight: 700; font-size: 18px; cursor: pointer; }
 .brand small { font-weight: 500; color: var(--muted); }
-nav { display: flex; gap: 6px; flex: 1; }
+nav { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 320px; min-width: 0; }   /* en móvil las pestañas pasan a otra línea en vez de salirse de la pantalla */
 nav button, button.link { background: none; border: 0; color: var(--text); padding: 6px 10px; border-radius: 8px; cursor: pointer; font: inherit; }
 nav button.on { background: var(--panel); border: 1px solid var(--line); }
 button.link { color: var(--accent); padding-left: 0; }

@@ -48,6 +48,7 @@ from typing import Dict, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 import openpyxl
+from openpyxl.styles import PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .models import ClientEntry, GenerationResult, RouteConfig, SapClientRecord
@@ -535,6 +536,20 @@ def _forzar_recalculo(wb) -> None:
     wb.calculation.fullCalcOnLoad = True
 
 
+def aplicar_vinetas(ws: Worksheet, config: RouteConfig, roster: List[ClientEntry], markers: Dict[str, str], col: Optional[str] = None) -> int:
+    """Pinta el relleno de la celda `col` (por defecto la columna del Folder, PROPUESTA aun sin confirmar) de cada cliente con color en `markers`
+    ({codigo: hex RRGGBB}). No toca texto, formulas, bordes, fuentes, anchos ni alturas. Devuelve cuantas celdas pinto."""
+    col = col or config.num_col
+    por_codigo = {str(k).upper(): v for k, v in markers.items()}
+    n = 0
+    for i, entry in enumerate(roster):
+        color = por_codigo.get(str(entry.codigo).upper())
+        if color:
+            ws[f"{col}{config.data_start_row + i}"].fill = PatternFill(fill_type="solid", fgColor="FF" + color.upper().lstrip("#"))
+            n += 1
+    return n
+
+
 def generate_route(
     route_config: RouteConfig,
     base_path: Path,
@@ -544,6 +559,8 @@ def generate_route(
     operations: Optional[List[Operation]] = None,
     force: bool = False,
     override_roster: Optional[List[ClientEntry]] = None,
+    markers: Optional[Dict[str, str]] = None,
+    marker_col: Optional[str] = None,
 ) -> GenerationResult:
     """Genera el Excel de un nuevo mes a partir del archivo base del mes anterior.
 
@@ -594,6 +611,9 @@ def generate_route(
     )
 
     replace_sap_table(ws_sap, sap_records, route_config)
+
+    if markers:   # OPT-IN (None por defecto = comportamiento anterior): viñetas digitales, solo el relleno de UNA celda por cliente
+        aplicar_vinetas(ws_main, route_config, new_roster, markers, marker_col)
 
     _forzar_recalculo(wb)
     wb.save(output_path)

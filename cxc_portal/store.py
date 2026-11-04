@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from cxc_bot import payment_semaphore as ps
+from cxc_bot import route_markers
 
 from .estado import ErrorNegocio, Estado
 from .fuentes import FuenteDatos, es_operable, es_operable
@@ -70,6 +71,7 @@ class Ruta:
     def cliente_dict(self, c: ClienteRuta) -> dict:
         s = c.resultado.to_dict()
         s["etiqueta_calculada"] = ps.ETIQUETA[c.resultado.calculado]
+        s["vineta"] = route_markers.vineta_de(c.resultado, bool(self.fuente.get("apta_para_publicar"))).to_dict()    # trazabilidad: por que el color es (o no) definitivo
         return {"folder": c.folder, "zona": c.zona, "codigo": c.codigo, "nombre": c.nombre, "saldo": c.saldo, "ruta": self.route_id,
                 "vendedor": self.vendedor, "plazo_dias": self.plazo_dias, "fuente": self.fuente, "semaforo": s}
 
@@ -83,7 +85,7 @@ class PortalServicio:
         self.estado, self.fuente, self.estado_dir = estado, fuente, Path(estado_dir)
         self.reporting, self.data_dir = reporting, (Path(data_dir) if data_dir else None)
         self._cache: Optional[Dict[str, Ruta]] = None
-        self._version = -1
+        self._version = None
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ fuente
@@ -109,6 +111,13 @@ class PortalServicio:
             "en_vivo": vivo}
 
     # ------------------------------------------------------------------ rutas evaluadas
+    def firma_fuente(self) -> Optional[tuple]:
+        """Identidad de los DATOS de la fuente (objeto, version de carga y corte): si cambia, todo lo derivado (clasificaciones, saldos, viñetas) es obsoleto."""
+        f = self.fuente
+        if f is None:
+            return None
+        return (id(f), getattr(f, "version_datos", 0), f.fecha_corte.isoformat())
+
     def invalidar(self) -> None:
         with self._lock:
             self._cache = None
@@ -116,7 +125,8 @@ class PortalServicio:
     def _evaluar(self) -> Dict[str, Ruta]:
         decisiones = {c: decision_a_motor(d) for c, d in self.estado.decisiones_vigentes().items()}
         info = self.info_fuente()
-        fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": []}
+        fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": [],
+                       "apta_para_publicar": bool(getattr(self.fuente, "apta_para_publicar", False))}
         usable = es_operable(self.fuente)
         out: Dict[str, Ruta] = {}
         for r in self.estado.listar_rutas():
@@ -137,11 +147,14 @@ class PortalServicio:
 
     def rutas(self) -> Dict[str, Ruta]:
         # La cache se invalida sola si OTRO proceso (CLI admin, integrar-ruta) cambia el catalogo o las decisiones en la BD compartida.
-        v = self.estado.version_catalogo()
+        v = (self.estado.version_catalogo(), self.firma_fuente())    # catalogo Y datos de la fuente: un corte nuevo recalcula sin tocar el catalogo
         with self._lock:
             if self._cache is None or v != self._version:
                 self._cache = self._evaluar()
                 self._version = v
+            apta = bool(getattr(self.fuente, "apta_para_publicar", False))     # se reevalua en cada consulta: la cache no puede congelar "validada"
+            for r in self._cache.values():
+                r.fuente["apta_para_publicar"] = apta
             return self._cache
 
     def ruta(self, route_id: str) -> Optional[Ruta]:
@@ -224,7 +237,7 @@ class PortalServicio:
             return []
         return sorted(p.name for p in (self.data_dir / "01_Rutas").glob("*.xlsx"))
 
-    def generar_excel(self, actor: dict, route_id: str, base: str, fecha_salida: str):
+    def generar_excel(self, actor: dict, route_id: str, base: str, fecha_salida: str, firma_fuente: Optional[tuple] = None):
         """Genera el Excel de la ruta con el MISMO generador de CXC BOT (formato operativo intacto): roster y folders desde la BD propia,
         hoja de datos SAP desde la fuente actual. Es un BORRADOR mientras la fuente sea un snapshot. No modifica el archivo base."""
         import shutil
@@ -239,6 +252,9 @@ class PortalServicio:
         r = self.estado.obtener_ruta(route_id)
         if not r or not r["activa"]:
             raise ErrorNegocio("Ruta no encontrada.", 404)
+        firma0 = self.firma_fuente()
+        if firma_fuente is not None and firma0 != firma_fuente:
+            raise ErrorNegocio("La fuente de datos cambió desde la evaluación de la salida: vuelva a preparar la salida y generar el Excel.", 409)
         if not es_operable(self.fuente):
             raise ErrorNegocio("No hay una fuente utilizable para llenar la hoja de datos SAP.", 409)
         if self.data_dir is None:
@@ -268,14 +284,32 @@ class PortalServicio:
             base_tmp = tmp / "base.xlsx"
             wb.save(base_tmp)
             salida = tmp / "salida.xlsx"
+            vinetas, avisos_vinetas = {}, []
+            if self.estado.configuracion().get("vinetas_excel"):
+                # OPT-IN (desactivado por defecto): el color sale del MOTOR UNICO; solo viñetas DEFINITIVAS (fuente validada + clase determinada)
+                ruta_ev = self.ruta(route_id)
+                plan = route_markers.plan_vinetas([c.resultado for c in ruta_ev.clientes], bool(getattr(self.fuente, "apta_para_publicar", False))) if ruta_ev else {}
+                vinetas = route_markers.colores_a_pintar(plan)
+                res = route_markers.resumen(plan)
+                avisos_vinetas = [f"Viñetas: {len(vinetas)} pintada(s); sin color: " + (", ".join(f"{k} {v}" for k, v in sorted(res.items()) if k != route_markers.DEFINITIVA) or "ninguna") + "."]
+                bn = route_markers.grupos_indistinguibles_en_gris(plan[c].color for c in vinetas)
+                if bn:
+                    avisos_vinetas.append("Impresión en blanco y negro: " + "; ".join("/".join(g) for g in bn) + " no se distinguen entre sí (mismo nivel de gris); usar impresión a color.")
             try:
-                excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster)
+                excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster, markers=vinetas or None)
             except excel_service.ExcelServiceError as e:
                 raise ErrorNegocio(f"No se pudo generar el Excel: {e}", 409) from e
             literales = {e.codigo.upper(): e.nombre_ruta for e in roster if e.nombre_ruta}
             rep = validators.validate_workbook(salida, config, expected_date=fecha, expected_client_count=len(roster), folder_mode=True, nombres_literales=literales)
             if not rep.ok:
                 raise ErrorNegocio("El Excel generado no pasó la validación: " + "; ".join(rep.errors[:5]), 409)
+            if self.estado.configuracion().get("vinetas_excel"):
+                rv = validators.validate_vinetas(salida, config, vinetas)
+                if not rv.ok:
+                    raise ErrorNegocio("Las viñetas del Excel no coinciden con el motor de semáforo: " + "; ".join(rv.errors[:5]), 409)
+                rep.warnings.extend(avisos_vinetas)
+            if self.firma_fuente() != firma0:   # los datos (o el corte) cambiaron mientras se generaba: el libro mezclaria dos cortes
+                raise ErrorNegocio("La fuente de datos cambió durante la generación del Excel: no se guarda; vuelva a generarlo.", 409)
             fuente_f = (self.fuente.fecha_corte.isoformat() if self.fuente else "sin-fuente")
             nombre = f"{r['route_id']}_{fecha.isoformat()}_BORRADOR_snapshot_{fuente_f}.xlsx"
             salidas = self.estado_dir / "salidas"

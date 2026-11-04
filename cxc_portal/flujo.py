@@ -344,6 +344,9 @@ class FlujoOperativo:
         motivos = []
         if not bool(getattr(fuente, "apta_para_publicar", False)):
             motivos.append("La fuente de datos no está validada para publicar (snapshot, simulada, desactualizada o con problemas de calidad): solo se genera BORRADOR.")
+        corte_prep = rep.get("fecha_corte_datos")
+        if corte_prep and fuente is not None and corte_prep != fuente.fecha_corte.isoformat():
+            motivos.append(f"La preparación de la salida corresponde al corte {corte_prep} y la fuente tiene ahora el corte {fuente.fecha_corte.isoformat()}: vuelva a preparar la salida.")
         if b.get("duras"):
             motivos.append(f"Hay {b['duras']} cliente(s) propuesto(s) sin confirmar o rechazar: el roster no está cerrado.")
         revisada_por_gerencia = bool(sal.get("revisada_por")) and (sal.get("revisada_rol") or self.estado.rol_de_usuario(sal.get("revisada_por"))) == "gerencia"
@@ -360,10 +363,17 @@ class FlujoOperativo:
             raise ErrorNegocio("Salida no encontrada.", 404)
         if not sal.get("preparada_en"):
             sal = self.preparar(actor, sid)
+        firma = self.servicio.firma_fuente()
         ev = self.evaluar_publicacion(sal)
-        datos, nombre, avisos = self.servicio.generar_excel(actor, sal["route_id"], base, sal["fecha_salida"])
+        datos, nombre, avisos = self.servicio.generar_excel(actor, sal["route_id"], base, sal["fecha_salida"], firma_fuente=firma)   # aborta si la fuente cambia
+        # REVALIDACION inmediatamente antes de persistir: la fuente, el corte y las excepciones se vuelven a evaluar; ante cualquier cambio solo BORRADOR
+        ev2 = self.evaluar_publicacion(sal)
+        extra = [] if self.servicio.firma_fuente() == firma else ["La fuente de datos cambió justo antes de guardar el Excel: solo se guarda como BORRADOR."]
+        ev = {**ev, "publicable": ev["publicable"] and ev2["publicable"] and not extra,
+              "motivos": list(dict.fromkeys(ev["motivos"] + ev2["motivos"] + extra)),
+              "requiere_revision_gerencia": ev["requiere_revision_gerencia"] or ev2["requiere_revision_gerencia"]}
         fuente = self.servicio.fuente
         ruta = self.estado.obtener_ruta(sal["route_id"])
         e = self.estado.registrar_excel(actor, sal["route_id"], sid, sal["fecha_salida"], nombre, datos, hashlib.sha256(datos).hexdigest(), huella_excel(datos), ev["publicable"],
-                                        getattr(fuente, "tipo", "SIN_FUENTE"), fuente.fecha_corte.isoformat() if fuente else "", len(ruta["clientes"]), avisos, ev["motivos"])
+                                        getattr(fuente, "tipo", "SIN_FUENTE"), (firma[2] if firma else ""), len(ruta["clientes"]), avisos, ev["motivos"])
         return {**e, "publicable": ev["publicable"], "motivos": ev["motivos"], "requiere_revision_gerencia": ev["requiere_revision_gerencia"]}

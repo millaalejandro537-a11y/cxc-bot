@@ -38,8 +38,8 @@ SEVERIDADES = ("info", "media", "alta")
 
 class FlujoMixin:
     # ------------------------------------------------------------------ configuracion (umbrales aprobados, editables y auditados)
-    CONFIG_DEFECTO = {"umbral_aumento_mora_dias": 5, "oportunidad_ventana_dias": 180, "oportunidad_max_facturas": 2}
-    CONFIG_RANGOS = {"umbral_aumento_mora_dias": (1, 90), "oportunidad_ventana_dias": (30, 730), "oportunidad_max_facturas": (0, 24)}
+    CONFIG_DEFECTO = {"umbral_aumento_mora_dias": 5, "oportunidad_ventana_dias": 180, "oportunidad_max_facturas": 2, "vinetas_excel": 0}
+    CONFIG_RANGOS = {"umbral_aumento_mora_dias": (1, 90), "oportunidad_ventana_dias": (30, 730), "oportunidad_max_facturas": (0, 24), "vinetas_excel": (0, 1)}
 
     def configuracion(self) -> Dict[str, int]:
         with self.tx() as c:

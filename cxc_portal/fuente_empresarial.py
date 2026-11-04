@@ -88,6 +88,7 @@ class FuenteEmpresarial:
         self.etiqueta = ("FUENTE EMPRESARIAL SIMULADA (datos sintéticos): no representa saldos reales" if simulado else "Fuente empresarial (solo lectura)")
         self.fecha_corte: date = date.min
         self._d: Optional[dict] = None          # ultima carga VALIDA
+        self.version_datos = 0                  # +1 cada vez que una carga valida REEMPLAZA a la anterior: identidad de los datos para invalidar derivados
         self.calidad: Dict[str, Any] = {"estado": "SIN_CARGA", "problemas": []}
         self.ultima_carga_ok: Optional[str] = None
         self.ultimo_error_conexion: Optional[str] = None
@@ -120,6 +121,7 @@ class FuenteEmpresarial:
                 raise
             return self.calidad
         self._d = nuevo["datos"]
+        self.version_datos += 1
         self.fecha_corte = nuevo["fecha_corte"]
         self.ultima_carga_ok = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.calidad = nuevo["calidad"]
@@ -251,7 +253,11 @@ class FuenteEmpresarial:
     @property
     def apta_para_publicar(self) -> bool:
         """Solo una fuente en vivo REAL (no simulada), cargada, vigente y sin bloqueos puede respaldar documentos no-borrador."""
-        return bool(self.en_vivo and self._d is not None and self.calidad.get("vigente") and self.calidad.get("estado") in ("OK", "CON_ADVERTENCIAS"))
+        return bool(self.en_vivo and self._d is not None and self._vigente_hoy() and self.calidad.get("estado") in ("OK", "CON_ADVERTENCIAS"))
+
+    def _vigente_hoy(self) -> bool:
+        """Vigencia EVALUADA AHORA (no la del momento de la carga): un proceso largo no puede seguir publicando con datos que ya envejecieron."""
+        return 0 <= (self._hoy() - self.fecha_corte).days <= self.max_edad_dias
 
     def _datos(self) -> dict:
         if self._d is None:
@@ -264,7 +270,7 @@ class FuenteEmpresarial:
         motivo = "; ".join(self.calidad.get("problemas", [])[:3]) or "Carga validada."
         if not self.en_vivo:
             motivo = "FUENTE SIMULADA: " + motivo
-        return {"tipo": self.tipo, "fecha_corte": self.fecha_corte.isoformat(), "edad_dias": edad, "vigente": bool(self.calidad.get("vigente")) and self.en_vivo,
+        return {"tipo": self.tipo, "fecha_corte": self.fecha_corte.isoformat(), "edad_dias": edad, "vigente": self._vigente_hoy() and self.en_vivo,
                 "calidad": self.calidad.get("estado"), "motivo": motivo, "ultima_carga_ok": self.ultima_carga_ok}
 
     # ------------------------------------------------------------------ interfaz FuenteDatos (solo lectura)

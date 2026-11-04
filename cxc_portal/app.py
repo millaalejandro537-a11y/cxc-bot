@@ -44,13 +44,15 @@ REGLAS = {
     "vigencia": "Hub Cosprobell CxC — Principal, decisiones 08–09/10/2026",
     "ventana_facturas": sm.VENTANA_FACTURAS, "minimo_historial": sm.MIN_HISTORIAL,
     "umbrales_media_mora": {"A": f"≤ {sm.TOLERANCIA_A}", "B": f"> {sm.TOLERANCIA_A} y ≤ {sm.LIMITE_B}", "C": f"> {sm.LIMITE_B} y ≤ {sm.LIMITE_C}",
-                            "CANDIDATO_SOLO_CONTADO": f"> {sm.LIMITE_C}"},
+                            (sm.SOLO_CONTADO if sm.CONTADO_AUTOMATICO else sm.CANDIDATO_SOLO_CONTADO): f"> {sm.LIMITE_C}"},
     "abiertas_entran_a_la_media_si": f"mora > {sm.ABIERTA_MORA_MINIMA} días", "plazos": {"foranea": sm.PLAZO_FORANEA, "local": sm.PLAZO_LOCAL},
     "alerta_por_factura": f"mora > {sm.ALERTA_FACTURA} días: abiertas = alerta operativa de cobro; pagadas = alerta histórica de comportamiento (nunca cobro pendiente)",
     "notas": ["Se evalúan las 10 facturas más recientes (emisión DESC, desempate número DESC).", "0–3 facturas en todo el historial: cliente de prueba (blanca).",
               "Mora = max(0, último recibo contable (o corte si está abierta) − emisión − plazo de la ruta). El vencimiento SAP se conserva, no es la base.",
-              "Más de 60 días es solo candidato a solo contado: la viñeta roja la decide gerencia.",
-              "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha; el cálculo automático no se altera."],
+              "Promedio de mora de más de 60 días = solo contado: viñeta ROJA automática (regla vigente), sin aprobación adicional de gerencia.",
+              "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha como trazabilidad. El sistema prevalece: una decisión solo resuelve lo que el sistema no puede clasificar (revisión humana / sin evidencia)."
+              if sm.SISTEMA_PREVALECE else "Las decisiones de gerencia se guardan aparte con autor, motivo y fecha; el cálculo automático no se altera."],
+    "vigentes": {"CONTADO_AUTOMATICO": sm.CONTADO_AUTOMATICO, "SISTEMA_PREVALECE": sm.SISTEMA_PREVALECE, "ANTICIPOS_RESPALDAN_PAGO": sm.ANTICIPOS_RESPALDAN_PAGO},
 }
 
 
@@ -832,7 +834,7 @@ def avisos(ctx: Contexto, p: Peticion):
         raise ErrorNegocio("Ruta no encontrada.", 404)
     sid = p.q("salida")
     filas = ctx.estado.listar_alertas([rid] if rid else list(vis), p.q("estado") or None, p.q("tipo") or None, int(sid) if sid.isdigit() else None)
-    return Respuesta(datos={"avisos": filas, "nota": "Avisos generados por el sistema: informan, no deciden. Los candidatos a solo contado siempre requieren decisión de gerencia."})
+    return Respuesta(datos={"avisos": filas, "nota": "Avisos generados por el sistema: informan, no deciden. Un resultado en contado es ROJO automático; gerencia decide solo donde el sistema no puede clasificar (revisión humana / sin evidencia)."})
 
 
 @endpoint("POST", "/api/avisos/{aid}/atender", roles=LECTURA_GLOBAL)
@@ -900,7 +902,13 @@ def dashboard_mio(ctx: Contexto, p: Peticion):
 def salida_impresion(ctx: Contexto, p: Peticion):
     """Prepara (idempotente) las solicitudes de impresion de la salida: hoja de visita vinculada y Excel vigente si NO es borrador. Solo registra."""
     _salida_visible(ctx, p)
-    return Respuesta(datos=ctx.flujo.preparar_impresion(p.usuario, int(p.params["sid"])))
+    try:
+        copias = int(p.cuerpo.get("copias") or 1)
+    except (TypeError, ValueError) as e:
+        raise ErrorNegocio("copias debe ser un número entero (1 a 20).") from e
+    if not 1 <= copias <= 20:
+        raise ErrorNegocio("Copias fuera de rango (1 a 20).")
+    return Respuesta(datos=ctx.flujo.preparar_impresion(p.usuario, int(p.params["sid"]), copias))
 
 
 @endpoint("POST", "/api/agente/{iid}/archivo", roles=None, publico=True)
@@ -916,7 +924,8 @@ def configuracion_leer(ctx: Contexto, p: Peticion):
     return Respuesta(datos={"valores": ctx.estado.configuracion(), "por_defecto": ctx.estado.CONFIG_DEFECTO, "rangos": ctx.estado.CONFIG_RANGOS,
                             "descripcion": {"umbral_aumento_mora_dias": "Aviso cuando la mora promedio aumenta esta cantidad de días o más entre salidas (aprobado: 5).",
                                             "oportunidad_ventana_dias": "Ventana (días antes del corte) para contar compras de un cliente A (aprobado: 180).",
-                                            "oportunidad_max_facturas": "Oportunidad comercial informativa si el cliente A tiene esta cantidad de facturas o menos en la ventana (aprobado: 2)."}})
+                                            "oportunidad_max_facturas": "Oportunidad comercial informativa si el cliente A tiene esta cantidad de facturas o menos en la ventana (aprobado: 2).",
+                                            "vinetas_excel": "1 = el Excel de ruta lleva el relleno de viñeta (solo con fuente validada y clientes con clase determinada). 0 = desactivado (por defecto): ubicación de la viñeta pendiente de confirmar con el Excel aprobado."}})
 
 
 @endpoint("POST", "/api/admin/configuracion", roles=LECTURA_GLOBAL)

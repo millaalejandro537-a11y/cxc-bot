@@ -40,6 +40,9 @@ export function Semaforo({ s }) {
     <span className="sem">
       <Dot color={s.color_final} title={s.etiqueta_final} />
       <span>{s.etiqueta_final}</span>
+      {s.vineta && s.vineta.estado !== 'DEFINITIVA' && (
+        <small className="muted" title={s.vineta.motivo}> ({s.vineta.estado === 'PROVISIONAL' ? 'provisional: fuente no validada' : s.vineta.estado === 'REVISION' ? 'pendiente de gerencia' : 'sin datos'})</small>
+      )}
       {cambia && <small className="muted"> (automático: {s.etiqueta_calculada})</small>}
     </span>
   )
