@@ -916,7 +916,8 @@ def configuracion_leer(ctx: Contexto, p: Peticion):
     return Respuesta(datos={"valores": ctx.estado.configuracion(), "por_defecto": ctx.estado.CONFIG_DEFECTO, "rangos": ctx.estado.CONFIG_RANGOS,
                             "descripcion": {"umbral_aumento_mora_dias": "Aviso cuando la mora promedio aumenta esta cantidad de días o más entre salidas (aprobado: 5).",
                                             "oportunidad_ventana_dias": "Ventana (días antes del corte) para contar compras de un cliente A (aprobado: 180).",
-                                            "oportunidad_max_facturas": "Oportunidad comercial informativa si el cliente A tiene esta cantidad de facturas o menos en la ventana (aprobado: 2)."}})
+                                            "oportunidad_max_facturas": "Oportunidad comercial informativa si el cliente A tiene esta cantidad de facturas o menos en la ventana (aprobado: 2).",
+                                            "vinetas_excel": "1 = el Excel de ruta lleva el relleno de viñeta (solo con fuente validada y clientes con clase determinada). 0 = desactivado (por defecto): ubicación de la viñeta pendiente de confirmar con el Excel aprobado."}})
 
 
 @endpoint("POST", "/api/admin/configuracion", roles=LECTURA_GLOBAL)

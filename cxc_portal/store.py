@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from cxc_bot import payment_semaphore as ps
+from cxc_bot import route_markers
+from cxc_bot import route_markers
 
 from .estado import ErrorNegocio, Estado
 from .fuentes import FuenteDatos, es_operable, es_operable
@@ -70,6 +72,7 @@ class Ruta:
     def cliente_dict(self, c: ClienteRuta) -> dict:
         s = c.resultado.to_dict()
         s["etiqueta_calculada"] = ps.ETIQUETA[c.resultado.calculado]
+        s["vineta"] = route_markers.vineta_de(c.resultado, bool(self.fuente.get("apta_para_publicar"))).to_dict()    # trazabilidad: por que el color es (o no) definitivo
         return {"folder": c.folder, "zona": c.zona, "codigo": c.codigo, "nombre": c.nombre, "saldo": c.saldo, "ruta": self.route_id,
                 "vendedor": self.vendedor, "plazo_dias": self.plazo_dias, "fuente": self.fuente, "semaforo": s}
 
@@ -116,7 +119,8 @@ class PortalServicio:
     def _evaluar(self) -> Dict[str, Ruta]:
         decisiones = {c: decision_a_motor(d) for c, d in self.estado.decisiones_vigentes().items()}
         info = self.info_fuente()
-        fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": []}
+        fuente_meta = {"tipo": info["tipo"], "fecha_corte": info["fecha_corte"], "en_vivo": info["en_vivo"], "etiqueta": info["etiqueta"], "notas": [],
+                       "apta_para_publicar": bool(getattr(self.fuente, "apta_para_publicar", False))}
         usable = es_operable(self.fuente)
         out: Dict[str, Ruta] = {}
         for r in self.estado.listar_rutas():
@@ -268,14 +272,27 @@ class PortalServicio:
             base_tmp = tmp / "base.xlsx"
             wb.save(base_tmp)
             salida = tmp / "salida.xlsx"
+            vinetas, avisos_vinetas = {}, []
+            if self.estado.configuracion().get("vinetas_excel"):
+                # OPT-IN (desactivado por defecto): el color sale del MOTOR UNICO; solo viñetas DEFINITIVAS (fuente validada + clase determinada)
+                ruta_ev = self.ruta(route_id)
+                plan = route_markers.plan_vinetas([c.resultado for c in ruta_ev.clientes], bool(getattr(self.fuente, "apta_para_publicar", False))) if ruta_ev else {}
+                vinetas = route_markers.colores_a_pintar(plan)
+                res = route_markers.resumen(plan)
+                avisos_vinetas = [f"Viñetas: {len(vinetas)} pintada(s); sin color: " + (", ".join(f"{k} {v}" for k, v in sorted(res.items()) if k != route_markers.DEFINITIVA) or "ninguna") + "."]
             try:
-                excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster)
+                excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster, markers=vinetas or None)
             except excel_service.ExcelServiceError as e:
                 raise ErrorNegocio(f"No se pudo generar el Excel: {e}", 409) from e
             literales = {e.codigo.upper(): e.nombre_ruta for e in roster if e.nombre_ruta}
             rep = validators.validate_workbook(salida, config, expected_date=fecha, expected_client_count=len(roster), folder_mode=True, nombres_literales=literales)
             if not rep.ok:
                 raise ErrorNegocio("El Excel generado no pasó la validación: " + "; ".join(rep.errors[:5]), 409)
+            if self.estado.configuracion().get("vinetas_excel"):
+                rv = validators.validate_vinetas(salida, config, vinetas)
+                if not rv.ok:
+                    raise ErrorNegocio("Las viñetas del Excel no coinciden con el motor de semáforo: " + "; ".join(rv.errors[:5]), 409)
+                rep.warnings.extend(avisos_vinetas)
             fuente_f = (self.fuente.fecha_corte.isoformat() if self.fuente else "sin-fuente")
             nombre = f"{r['route_id']}_{fecha.isoformat()}_BORRADOR_snapshot_{fuente_f}.xlsx"
             salidas = self.estado_dir / "salidas"

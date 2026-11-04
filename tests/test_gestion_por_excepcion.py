@@ -168,7 +168,7 @@ def test_alerta_cuando_la_mora_promedio_sube_5_dias_o_mas(env, antes, ahora, esp
 
 def test_el_umbral_es_configurable_auditado_y_validado(env):
     s, ctx, _ = env
-    assert ctx.estado.configuracion() == {"umbral_aumento_mora_dias": 5, "oportunidad_ventana_dias": 180, "oportunidad_max_facturas": 2}
+    assert ctx.estado.configuracion() == {"umbral_aumento_mora_dias": 5, "oportunidad_ventana_dias": 180, "oportunidad_max_facturas": 2, "vinetas_excel": 0}
     ctx.estado.fijar_configuracion(GER, "umbral_aumento_mora_dias", 10)
     assert _preparar_con_mora(ctx, 10, 18) == []                                         # +8 < 10: ya no alerta
     assert any(a["accion"] == "configuracion.fijar" and "10" in a["detalle"] for a in ctx.estado.listar_auditoria(50))

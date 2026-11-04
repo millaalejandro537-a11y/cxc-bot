@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import openpyxl
 
@@ -207,6 +207,30 @@ def validate_workbook(
 
     wb.close()
     return ValidationReport(ok=len(errors) == 0, errors=errors, warnings=warnings)
+
+
+def validate_vinetas(path: Path, config: RouteConfig, esperado: Dict[str, str], col: Optional[str] = None) -> ValidationReport:
+    """Comprueba que cada cliente con color esperado ({codigo: hex}) tiene EXACTAMENTE ese relleno en la celda de viñeta y que ningun otro
+    cliente quedo con un color de viñeta (nada pintado por error ni color de credito inventado)."""
+    from .route_markers import HEX
+    errors: List[str] = []
+    ws = openpyxl.load_workbook(path, data_only=False)[config.main_sheet]
+    col = col or config.num_col
+    code_col = config.code_col
+    esperado = {str(k).upper(): "FF" + v.upper().lstrip("#") for k, v in esperado.items()}
+    colores_vineta = {"FF" + h for h in HEX.values()}
+    row = config.data_start_row
+    while ws[f"{code_col}{row}"].value not in (None, ""):
+        codigo = str(ws[f"{code_col}{row}"].value).strip().upper()
+        f = ws[f"{col}{row}"].fill
+        actual = f.fgColor.rgb if (f is not None and f.fill_type == "solid" and isinstance(f.fgColor.rgb, str)) else None
+        if codigo in esperado:
+            if actual != esperado[codigo]:
+                errors.append(f"Fila {row} ({codigo}): la viñeta debería ser {esperado[codigo][2:]} y es {actual[2:] if actual else 'sin color'}.")
+        elif actual in colores_vineta:
+            errors.append(f"Fila {row} ({codigo}): tiene color de viñeta {actual[2:]} sin que el motor lo haya determinado.")
+        row += 1
+    return ValidationReport(ok=not errors, errors=errors, warnings=[])
 
 
 def assert_valid(report: ValidationReport) -> None:
