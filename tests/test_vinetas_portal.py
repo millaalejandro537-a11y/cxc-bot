@@ -119,6 +119,7 @@ def test_con_opt_in_y_fuente_validada_el_excel_lleva_el_color_del_motor(apta):
     esperado = [v["hex"] for v in api]                                  # DEFINITIVA -> hex; REVISION/SIN_DATOS -> None
     assert _rellenos(ws, N) == esperado
     assert {"VERDE", "AZUL", "AMARILLO", "ROJO", "BLANCO"} <= {v["color"] for v in api if v["estado"] == rm.DEFINITIVA}
+    assert any(a.startswith("Impresión en blanco y negro") for a in _adv(e1))                                  # limitacion informada, no oculta
     assert all(v["hex"] is None for v in api if v["estado"] in (rm.REVISION, rm.SIN_DATOS))                      # nada de color de credito inventado
     assert all(v["hex"] == "DC2626" for v in api if v["clase_final"] == "SOLO_CONTADO")                         # contado = rojo automatico
     assert ws.cell(8 + N + 3, 1).value == "SIGNIFICADO DE LAS VIÑETAS"                                          # leyenda intacta

@@ -146,6 +146,9 @@ class PortalServicio:
             if self._cache is None or v != self._version:
                 self._cache = self._evaluar()
                 self._version = v
+            apta = bool(getattr(self.fuente, "apta_para_publicar", False))     # se reevalua en cada consulta: la cache no puede congelar "validada"
+            for r in self._cache.values():
+                r.fuente["apta_para_publicar"] = apta
             return self._cache
 
     def ruta(self, route_id: str) -> Optional[Ruta]:
@@ -280,6 +283,9 @@ class PortalServicio:
                 vinetas = route_markers.colores_a_pintar(plan)
                 res = route_markers.resumen(plan)
                 avisos_vinetas = [f"Viñetas: {len(vinetas)} pintada(s); sin color: " + (", ".join(f"{k} {v}" for k, v in sorted(res.items()) if k != route_markers.DEFINITIVA) or "ninguna") + "."]
+                bn = route_markers.grupos_indistinguibles_en_gris(plan[c].color for c in vinetas)
+                if bn:
+                    avisos_vinetas.append("Impresión en blanco y negro: " + "; ".join("/".join(g) for g in bn) + " no se distinguen entre sí (mismo nivel de gris); usar impresión a color.")
             try:
                 excel_service.generate_route(config, base_tmp, salida, fecha, registros, override_roster=roster, markers=vinetas or None)
             except excel_service.ExcelServiceError as e:

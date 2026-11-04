@@ -212,7 +212,7 @@ def validate_workbook(
 def validate_vinetas(path: Path, config: RouteConfig, esperado: Dict[str, str], col: Optional[str] = None) -> ValidationReport:
     """Comprueba que cada cliente con color esperado ({codigo: hex}) tiene EXACTAMENTE ese relleno en la celda de viñeta y que ningun otro
     cliente quedo con un color de viñeta (nada pintado por error ni color de credito inventado)."""
-    from .route_markers import HEX
+    from .route_markers import HEX, contraste, contraste_minimo
     errors: List[str] = []
     ws = openpyxl.load_workbook(path, data_only=False)[config.main_sheet]
     col = col or config.num_col
@@ -227,6 +227,13 @@ def validate_vinetas(path: Path, config: RouteConfig, esperado: Dict[str, str], 
         if codigo in esperado:
             if actual != esperado[codigo]:
                 errors.append(f"Fila {row} ({codigo}): la viñeta debería ser {esperado[codigo][2:]} y es {actual[2:] if actual else 'sin color'}.")
+            else:   # legibilidad del texto de la celda sobre el relleno (sin cambiar la fuente: si no alcanza, se informa)
+                c = ws[f"{col}{row}"]
+                col_txt = c.font.color.rgb[2:] if (c.font.color is not None and c.font.color.type == "rgb" and isinstance(c.font.color.rgb, str)) else "000000"
+                minimo = contraste_minimo(float(c.font.sz or 11), bool(c.font.b))
+                if contraste(esperado[codigo][2:], col_txt) < minimo:
+                    errors.append(f"Fila {row} ({codigo}): contraste insuficiente del texto {col_txt} sobre {esperado[codigo][2:]} "
+                                  f"({contraste(esperado[codigo][2:], col_txt):.1f}:1; mínimo {minimo}:1 para {c.font.sz or 11} pt).")
         elif actual in colores_vineta:
             errors.append(f"Fila {row} ({codigo}): tiene color de viñeta {actual[2:]} sin que el motor lo haya determinado.")
         row += 1

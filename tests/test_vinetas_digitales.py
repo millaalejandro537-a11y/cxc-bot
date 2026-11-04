@@ -156,3 +156,40 @@ def test_el_validador_detecta_color_equivocado_o_inventado(tmp_path):
     assert not mal.ok and "C90000" in mal.errors[0]
     inventado = validators.validate_vinetas(tmp_path / "o.xlsx", cfg, {"C90000": "34A853"})                 # C90001 quedo pintado sin que el motor lo determine
     assert not inventado.ok and "C90001" in inventado.errors[0]
+
+
+# --------------------------------------------------------------------------------------------- 3. contraste y legibilidad (incluida impresion simulada)
+@pytest.mark.parametrize("nombre,hex_", sorted(rm.HEX.items()))
+def test_texto_de_la_celda_de_folder_es_legible_sobre_cada_color(tmp_path, nombre, hex_):
+    """Folder real de las plantillas: Arial 16 negrita automatico (texto grande -> minimo 3:1). Se mide sobre cada relleno."""
+    cfg = load_route_config("LAS VEGAS")
+    sap = [SapClientRecord(codigo="C90000", nombre="X", saldo=1.0)]
+    generate_route(cfg, FIX / "LAS VEGAS MAYO.xlsx", tmp_path / "o.xlsx", date(2026, 11, 3), sap, override_roster=[ClientEntry(codigo="C90000", folder="1 LV")], markers={"C90000": hex_})
+    c = openpyxl.load_workbook(tmp_path / "o.xlsx")[cfg.main_sheet]["A8"]
+    assert c.font.sz >= 14 and c.font.b                                   # la plantilla usa texto grande
+    assert rm.contraste(hex_, "000000") >= rm.contraste_minimo(c.font.sz, c.font.b) >= 3.0
+    assert validators.validate_vinetas(tmp_path / "o.xlsx", cfg, {"C90000": hex_}).ok
+
+
+def test_texto_pequeno_sobre_relleno_oscuro_se_rechaza_con_un_mensaje_claro(tmp_path):
+    from openpyxl.styles import Font
+    cfg = load_route_config("LAS VEGAS")
+    sap = [SapClientRecord(codigo="C90000", nombre="X", saldo=1.0)]
+    generate_route(cfg, FIX / "LAS VEGAS MAYO.xlsx", tmp_path / "o.xlsx", date(2026, 11, 3), sap, override_roster=[ClientEntry(codigo="C90000", folder="1 LV")],
+                   markers={"C90000": "2563EB"})
+    wb = openpyxl.load_workbook(tmp_path / "o.xlsx")
+    wb[cfg.main_sheet]["A8"].font = Font(name="Arial", sz=11, b=False)    # una plantilla con texto normal (<14 pt): exige 4.5:1
+    wb.save(tmp_path / "pequeno.xlsx")
+    r = validators.validate_vinetas(tmp_path / "pequeno.xlsx", cfg, {"C90000": "2563EB"})
+    assert not r.ok and "contraste insuficiente" in r.errors[0] and "C90000" in r.errors[0]
+    wb[cfg.main_sheet]["A8"].font = Font(name="Arial", sz=11, b=False, color="FFFFFFFF")     # texto blanco si alcanza en el azul
+    wb.save(tmp_path / "blanco.xlsx")
+    assert validators.validate_vinetas(tmp_path / "blanco.xlsx", cfg, {"C90000": "2563EB"}).ok
+
+
+def test_impresion_en_blanco_y_negro_los_colores_oscuros_no_se_distinguen():
+    """Limitacion medida (no se oculta): en escala de grises AZUL, ROJO, BLANCO y VERDE quedan a <= 40 niveles; solo AMARILLO se distingue."""
+    grupos = rm.grupos_indistinguibles_en_gris(rm.HEX)
+    assert grupos == [["ROJO", "AZUL", "BLANCO", "VERDE"]] or sorted(grupos[0]) == ["AZUL", "BLANCO", "ROJO", "VERDE"]
+    assert rm.grupos_indistinguibles_en_gris(["AMARILLO", "VERDE"]) == []
+    assert rm.grupos_indistinguibles_en_gris(["VERDE"]) == []

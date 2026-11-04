@@ -66,3 +66,41 @@ def resumen(plan: Mapping[str, Vineta]) -> Dict[str, int]:
     for v in plan.values():
         out[v.estado] = out.get(v.estado, 0) + 1
     return out
+
+
+# ----------------------------------------------------------------------------------------------- legibilidad (WCAG) e impresion en blanco y negro
+def _luminancia(hex_rgb: str) -> float:
+    r, g, b = (int(hex_rgb[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4   # noqa: E731
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def contraste(fondo: str, texto: str = "000000") -> float:
+    """Relacion de contraste WCAG 2.x entre dos colores RRGGBB (1 a 21)."""
+    a, b = _luminancia(fondo.lstrip("#")), _luminancia(texto.lstrip("#"))
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+
+def contraste_minimo(tamano_pt: float, negrita: bool) -> float:
+    """3:1 para texto grande (>= 14 pt en negrita o >= 18 pt); 4.5:1 para el resto (WCAG AA)."""
+    return 3.0 if (tamano_pt >= 18 or (negrita and tamano_pt >= 14)) else 4.5
+
+
+def nivel_gris(hex_rgb: str) -> int:
+    """Nivel de gris (0-255) con que una impresora en blanco y negro reproduce el color."""
+    h = hex_rgb.lstrip("#")
+    return round(0.299 * int(h[0:2], 16) + 0.587 * int(h[2:4], 16) + 0.114 * int(h[4:6], 16))
+
+
+def grupos_indistinguibles_en_gris(colores: Iterable[str], umbral: int = 40) -> list:
+    """Grupos de colores (nombres del motor) cuyo gris difiere <= `umbral`: en impresion B/N no se distinguen entre si."""
+    usados = sorted({c for c in colores if c in HEX}, key=lambda c: nivel_gris(HEX[c]))
+    grupos, actual = [], []
+    for c in usados:
+        if actual and nivel_gris(HEX[c]) - nivel_gris(HEX[actual[-1]]) > umbral:
+            grupos.append(actual)
+            actual = []
+        actual.append(c)
+    if actual:
+        grupos.append(actual)
+    return [g for g in grupos if len(g) > 1]
