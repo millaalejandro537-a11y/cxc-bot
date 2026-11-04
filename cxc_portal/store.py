@@ -16,7 +16,6 @@ from typing import Dict, List, Optional
 
 from cxc_bot import payment_semaphore as ps
 from cxc_bot import route_markers
-from cxc_bot import route_markers
 
 from .estado import ErrorNegocio, Estado
 from .fuentes import FuenteDatos, es_operable, es_operable
@@ -86,7 +85,7 @@ class PortalServicio:
         self.estado, self.fuente, self.estado_dir = estado, fuente, Path(estado_dir)
         self.reporting, self.data_dir = reporting, (Path(data_dir) if data_dir else None)
         self._cache: Optional[Dict[str, Ruta]] = None
-        self._version = -1
+        self._version = None
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ fuente
@@ -112,6 +111,13 @@ class PortalServicio:
             "en_vivo": vivo}
 
     # ------------------------------------------------------------------ rutas evaluadas
+    def firma_fuente(self) -> Optional[tuple]:
+        """Identidad de los DATOS de la fuente (objeto, version de carga y corte): si cambia, todo lo derivado (clasificaciones, saldos, viñetas) es obsoleto."""
+        f = self.fuente
+        if f is None:
+            return None
+        return (id(f), getattr(f, "version_datos", 0), f.fecha_corte.isoformat())
+
     def invalidar(self) -> None:
         with self._lock:
             self._cache = None
@@ -141,7 +147,7 @@ class PortalServicio:
 
     def rutas(self) -> Dict[str, Ruta]:
         # La cache se invalida sola si OTRO proceso (CLI admin, integrar-ruta) cambia el catalogo o las decisiones en la BD compartida.
-        v = self.estado.version_catalogo()
+        v = (self.estado.version_catalogo(), self.firma_fuente())    # catalogo Y datos de la fuente: un corte nuevo recalcula sin tocar el catalogo
         with self._lock:
             if self._cache is None or v != self._version:
                 self._cache = self._evaluar()
@@ -231,7 +237,7 @@ class PortalServicio:
             return []
         return sorted(p.name for p in (self.data_dir / "01_Rutas").glob("*.xlsx"))
 
-    def generar_excel(self, actor: dict, route_id: str, base: str, fecha_salida: str):
+    def generar_excel(self, actor: dict, route_id: str, base: str, fecha_salida: str, firma_fuente: Optional[tuple] = None):
         """Genera el Excel de la ruta con el MISMO generador de CXC BOT (formato operativo intacto): roster y folders desde la BD propia,
         hoja de datos SAP desde la fuente actual. Es un BORRADOR mientras la fuente sea un snapshot. No modifica el archivo base."""
         import shutil
@@ -246,6 +252,9 @@ class PortalServicio:
         r = self.estado.obtener_ruta(route_id)
         if not r or not r["activa"]:
             raise ErrorNegocio("Ruta no encontrada.", 404)
+        firma0 = self.firma_fuente()
+        if firma_fuente is not None and firma0 != firma_fuente:
+            raise ErrorNegocio("La fuente de datos cambió desde la evaluación de la salida: vuelva a preparar la salida y generar el Excel.", 409)
         if not es_operable(self.fuente):
             raise ErrorNegocio("No hay una fuente utilizable para llenar la hoja de datos SAP.", 409)
         if self.data_dir is None:
@@ -299,6 +308,8 @@ class PortalServicio:
                 if not rv.ok:
                     raise ErrorNegocio("Las viñetas del Excel no coinciden con el motor de semáforo: " + "; ".join(rv.errors[:5]), 409)
                 rep.warnings.extend(avisos_vinetas)
+            if self.firma_fuente() != firma0:   # los datos (o el corte) cambiaron mientras se generaba: el libro mezclaria dos cortes
+                raise ErrorNegocio("La fuente de datos cambió durante la generación del Excel: no se guarda; vuelva a generarlo.", 409)
             fuente_f = (self.fuente.fecha_corte.isoformat() if self.fuente else "sin-fuente")
             nombre = f"{r['route_id']}_{fecha.isoformat()}_BORRADOR_snapshot_{fuente_f}.xlsx"
             salidas = self.estado_dir / "salidas"

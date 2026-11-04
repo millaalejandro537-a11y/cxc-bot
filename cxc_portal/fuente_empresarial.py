@@ -88,6 +88,7 @@ class FuenteEmpresarial:
         self.etiqueta = ("FUENTE EMPRESARIAL SIMULADA (datos sintéticos): no representa saldos reales" if simulado else "Fuente empresarial (solo lectura)")
         self.fecha_corte: date = date.min
         self._d: Optional[dict] = None          # ultima carga VALIDA
+        self.version_datos = 0                  # +1 cada vez que una carga valida REEMPLAZA a la anterior: identidad de los datos para invalidar derivados
         self.calidad: Dict[str, Any] = {"estado": "SIN_CARGA", "problemas": []}
         self.ultima_carga_ok: Optional[str] = None
         self.ultimo_error_conexion: Optional[str] = None
@@ -120,6 +121,7 @@ class FuenteEmpresarial:
                 raise
             return self.calidad
         self._d = nuevo["datos"]
+        self.version_datos += 1
         self.fecha_corte = nuevo["fecha_corte"]
         self.ultima_carga_ok = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.calidad = nuevo["calidad"]
