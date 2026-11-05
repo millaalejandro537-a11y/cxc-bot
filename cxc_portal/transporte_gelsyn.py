@@ -101,6 +101,8 @@ class TransporteGelsyn:
         self.cliente, self.entorno, self._ahora = cliente, entorno, ahora
         self._carga: Optional[dict] = None
         self.versiones: Dict[str, Any] = {}
+        self.cortes: Dict[str, Optional[str]] = {}
+        self.saldos_no_simultaneos = False
         self.excluidos: Dict[str, int] = {}
         self.advertencias: List[str] = []
 
@@ -151,18 +153,30 @@ class TransporteGelsyn:
     def metadatos(self) -> Dict[str, Any]:
         self._carga = None                                   # cada metadatos() abre una carga nueva
         c = self._cargar()
-        cortes = [m.get("ultimaCargaCompleta") for m in c["metas"].values()]
-        completo = all(x for x in cortes)
-        fechas = [f for f in (fecha_comercial(x) for x in cortes if x) if f]
+        # Cada entidad se carga en su propio momento (verificado en Cosprobell-pruebas: clientes 27/10, aplicaciones 30/10, facturas y pagos 4/11): se registran TODOS los cortes.
+        # El corte de DOCUMENTOS (el que valida fechas de facturas y pagos) es el de facturas/pagos; nunca el menor entre entidades, que descartaria documentos recientes validos.
+        self.cortes = {e: (fecha_comercial(m.get("ultimaCargaCompleta")) if m.get("ultimaCargaCompleta") else None) for e, m in c["metas"].items()}
+        completo = all(self.cortes.values())
+        docs = [self.cortes[e] for e in ("facturas", "pagos") if self.cortes.get(e)]
+        corte = max(docs) if docs else None
         monedas = sorted({str(x) for m in c["metas"].values() for x in (m.get("monedas") or [])})
         if len(monedas) > 1:
             self.advertencias.append(f"Varias monedas en la carga ({', '.join(monedas)}): los importes no se suman entre monedas.")
         for ent, m in c["metas"].items():
             for adv in (m.get("advertencias") or []):
                 self.advertencias.append(f"{ent}: {adv}")
-        return {"fecha_corte": min(fechas) if fechas else None, "generado_en": self._ahora().astimezone(timezone.utc).isoformat(timespec="seconds"),
-                "version_contrato": CONTRATO_VERSION, "completo": bool(completo) and bool(fechas),
-                "sistema_origen": f"Cosprobell Backend (Gelsyn) · {self.entorno} · versiones " + ", ".join(f"{e}={v}" for e, v in sorted(self.versiones.items())),
+        self.saldos_no_simultaneos = bool(corte and self.cortes.get("clientes") != corte)
+        if len({v for v in self.cortes.values() if v}) > 1:
+            self.advertencias.append("Cortes por entidad NO simultáneos (" + ", ".join(f"{e}={v}" for e, v in sorted(self.cortes.items())) + "): no se mezclan como si fueran un mismo corte.")
+        if self.saldos_no_simultaneos:
+            self.advertencias.append(f"El saldo de control de clientes ({self.cortes.get('clientes')}) no es del corte de documentos ({corte}): NO se emite ni se presenta como saldo conciliado; "
+                                     "el saldo mostrado es la suma de documentos abiertos, sin certificar.")
+        if self.cortes.get("aplicacionesPagos") and self.cortes.get("pagos") and self.cortes["aplicacionesPagos"] < self.cortes["pagos"]:
+            self.advertencias.append(f"Las aplicaciones de pagos ({self.cortes['aplicacionesPagos']}) son anteriores a los pagos ({self.cortes['pagos']}): los pagos posteriores pueden no tener aplicaciones aún.")
+        return {"fecha_corte": corte, "generado_en": self._ahora().astimezone(timezone.utc).isoformat(timespec="seconds"),
+                "version_contrato": CONTRATO_VERSION, "completo": bool(completo) and bool(corte), "cortes": dict(self.cortes),
+                "sistema_origen": f"Cosprobell Backend (Gelsyn) · {self.entorno} · versiones " + ", ".join(f"{e}={v}" for e, v in sorted(self.versiones.items()))
+                                  + " · cortes " + ", ".join(f"{e}={v}" for e, v in sorted(self.cortes.items())),
                 "monedas": monedas}
 
     def clientes(self) -> List[dict]:
@@ -211,7 +225,12 @@ class TransporteGelsyn:
         return out
 
     def saldos(self) -> List[dict]:
-        """Saldo de CONTROL provisto por SAP (`currentAccountBalance`). Nulo => sin fila (jamas cero). No es saldo abierto por partidas: ver MOTIVO_NO_APTO."""
+        """Saldo de CONTROL provisto por SAP (`currentAccountBalance`). Nulo => sin fila (jamas cero). Solo se emite si es del MISMO corte que los documentos; si no (cortes distintos)
+        se omite entera la lista: un saldo de otra fecha no se presenta ni se compara como conciliado. No es saldo abierto por partidas: ver MOTIVO_NO_APTO."""
+        self._cargar()
+        if getattr(self, "saldos_no_simultaneos", False):
+            self.excluidos["saldos_de_control_de_otro_corte"] = len(self._cargar()["datos"]["clientes"])
+            return []
         out = []
         for f in self._cargar()["datos"]["clientes"]:
             s = importe(f.get("currentAccountBalance"))

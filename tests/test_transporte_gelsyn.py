@@ -221,3 +221,61 @@ def test_demasiadas_filas_indeterminadas_rechazan_la_carga_con_la_tolerancia_por
     with pytest.raises(fe.DatosBloqueados, match="Demasiadas filas inválidas"):
         f.recargar()
     assert f.apta_para_publicar is False and f.calidad["estado"] == "BLOQUEADA"
+
+
+# ------------------------------------------------------------------------------------------------ cortes NO simultaneos entre entidades (verificado en Cosprobell-pruebas)
+CORTES_REALES = {"clientes": {"ultimaCargaCompleta": "2026-10-27T18:33:28Z"}, "aplicacionesPagos": {"ultimaCargaCompleta": "2026-10-30T19:27:05Z"},
+                 "facturas": {"ultimaCargaCompleta": "2026-11-04T16:07:56Z"}, "pagos": {"ultimaCargaCompleta": "2026-11-04T16:43:17Z"}}
+
+
+def _datos_con_facturas_recientes():
+    d = _datos()
+    base = {"cardCode": "C90001", "docTotal": "50", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": False, "cancelStatus": None, "docCurrency": "LPS",
+            "docDueDate": "2026-12-30T00:00:00"}
+    d["facturas"] += [{**base, "docEntry": 107, "docNum": 5007, "docDate": "2026-10-28T00:00:00"},       # despues del corte de clientes
+                      {**base, "docEntry": 108, "docNum": 5008, "docDate": "2026-11-04T00:00:00"}]       # el mismo dia del corte de documentos
+    return d
+
+
+def test_el_corte_de_documentos_es_el_de_facturas_y_pagos_y_se_registran_todos_los_cortes():
+    t = _transporte(Servidor(datos=_datos_con_facturas_recientes(), metas=CORTES_REALES))
+    m = t.metadatos()
+    assert m["fecha_corte"] == "2026-11-04"                                                       # NO el menor (27/10) que descartaria documentos recientes
+    assert m["cortes"] == {"clientes": "2026-10-27", "aplicacionesPagos": "2026-10-30", "facturas": "2026-11-04", "pagos": "2026-11-04"}
+    assert "cortes " in m["sistema_origen"] and "clientes=2026-10-27" in m["sistema_origen"] and m["completo"] is True
+    adv = " | ".join(t.advertencias)
+    assert "NO simultáneos" in adv and "no es del corte de documentos" in adv and "aplicaciones de pagos (2026-10-30) son anteriores" in adv
+
+
+def test_las_facturas_recientes_se_conservan_y_no_se_descartan_por_fecha_posterior_al_corte():
+    t = _transporte(Servidor(datos=_datos_con_facturas_recientes(), metas=CORTES_REALES))
+    f = fe.FuenteEmpresarial(t, hoy=lambda: date(2026, 11, 5), max_edad_dias=5, tolerancia_invalidos=0.5)
+    cal = f.recargar()
+    ids = {x.id_factura for x in f.facturas_por_cliente(["C90001"])["C90001"]}
+    assert {"107", "108"} <= ids                                                                  # las dos facturas posteriores al corte de clientes siguen ahi
+    assert not any("posterior a la fecha de corte" in str(d[2]) for d in cal["filas_descartadas"])
+    assert f.fecha_corte == date(2026, 11, 4)
+
+
+def test_con_cortes_distintos_el_saldo_de_control_no_se_emite_ni_se_presenta_como_conciliado():
+    t = _transporte(Servidor(datos=_datos_con_facturas_recientes(), metas=CORTES_REALES))
+    f = fe.FuenteEmpresarial(t, hoy=lambda: date(2026, 11, 5), max_edad_dias=5, tolerancia_invalidos=0.5)
+    cal = f.recargar()
+    assert t.saldos() == [] and t.excluidos["saldos_de_control_de_otro_corte"] == 3
+    assert f.saldo_abierto("C90001") != 1500.5                                                    # el saldo de control (otro corte) NO se mezcla: se muestra la suma de documentos abiertos
+    assert abs(f.saldo_abierto("C90001") - (583.69 + 50 + 50)) < 0.01
+    assert any("NO se emite ni se presenta como saldo conciliado" in p for p in cal["problemas"])
+    assert cal["diferencias_saldo"] == []                                                         # y no se fabrican diferencias contra un saldo de otra fecha
+
+
+def test_con_el_mismo_corte_en_todas_las_entidades_el_saldo_de_control_si_se_emite():
+    t = _transporte(Servidor())
+    t.metadatos()
+    assert {x["codigo_cliente"] for x in t.saldos()} == {"C90001", "C90003"} and t.saldos_no_simultaneos is False
+
+
+def test_la_fuente_con_cortes_distintos_sigue_sin_ser_apta_para_publicar():
+    t = _transporte(Servidor(datos=_datos_con_facturas_recientes(), metas=CORTES_REALES))
+    f = fe.FuenteEmpresarial(t, hoy=lambda: date(2026, 11, 5), max_edad_dias=5, tolerancia_invalidos=0.5)
+    f.recargar()
+    assert f.apta_para_publicar is False and t.apto_para_publicar is False and f.en_vivo is False
