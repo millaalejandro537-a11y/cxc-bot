@@ -153,6 +153,14 @@ E_AMPLIACION: List[Tuple[str, str]] = [
                            'count(DISTINCT f."cardCode") FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" > 0.01 AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS clientes_con_cerradas_sin_cobro_acreditado '
                            'FROM facturas f LEFT JOIN (SELECT "facturaDocEntry", sum("sumApplied") AS suma FROM pagos_facturas WHERE ' + _pub("aplicacionesPagos")
                            + ' AND cancelado = \'N\' AND "facturaDocEntry" IS NOT NULL GROUP BY 1) ap ON ap."facturaDocEntry" = f."docEntry" WHERE ' + _pub("facturas", "f") + ' AND NOT f.cancelled'),
+    ("cancelado_dominios", 'SELECT \'facturas\' AS t, "canceladoSap"::text AS valor, count(*) AS n FROM facturas WHERE ' + _pub("facturas") + ' GROUP BY 2 UNION ALL '
+                           'SELECT \'notas_credito\', "canceladoSap"::text, count(*) FROM notas_credito WHERE ' + _pub("notasCredito") + ' GROUP BY 2 UNION ALL '
+                           'SELECT \'pagos\', "canceladoSap"::text, count(*) FROM pagos WHERE ' + _pub("pagos") + ' GROUP BY 2 UNION ALL '
+                           'SELECT \'pagos_facturas\', cancelado::text, count(*) FROM pagos_facturas WHERE ' + _pub("aplicacionesPagos") + ' GROUP BY 2'),
+    ("pagos_importes", 'SELECT count(*) AS n, count(*) FILTER (WHERE total IS NOT NULL) AS con_total, count(*) FILTER (WHERE "cashSum" IS NOT NULL) AS con_efectivo, '
+                       'count(*) FILTER (WHERE "transferSum" IS NOT NULL) AS con_transferencia, count(*) FILTER (WHERE cheques IS NOT NULL) AS con_cheques, '
+                       'count(*) FILTER (WHERE tarjetas IS NOT NULL) AS con_tarjetas, count(*) FILTER (WHERE coalesce("cashSum", 0) + coalesce("transferSum", 0) > 0) AS efectivo_mas_transferencia_positivo '
+                       'FROM pagos WHERE ' + _pub("pagos")),
     ("aplicaciones_vs_pago", 'SELECT count(*) AS pagos_con_aplicado_mayor_al_total FROM (SELECT p."docEntry" FROM pagos p JOIN pagos_facturas a ON a."pagoDocEntry" = p."docEntry" WHERE '
                              + _pub("pagos", "p") + ' AND ' + _pub("aplicacionesPagos", "a") + ' AND a.cancelado = \'N\' GROUP BY p."docEntry", p.total HAVING sum(a."sumApplied") > p.total + 0.01) x'),
 ]

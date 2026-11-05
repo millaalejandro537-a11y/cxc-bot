@@ -113,7 +113,7 @@ def test_preflight_apto_hace_pocas_peticiones_todas_get_y_no_imprime_datos_ni_se
     reg = []
     cli, cfg = _cliente(_rutas_ok(), reg)
     res = gp.preflight(cli, cfg)
-    assert res["veredicto"] == "APTO_PARA_MAPEO" and res["problemas"] == [] and res["peticiones"] == 7
+    assert res["veredicto"] == "APTO_PARA_MAPEO" and res["problemas"] == [] and res["peticiones"] == 6
     assert {m for m, _, _ in reg} == {"GET"} and all("limit=1" in u for _, u, _ in reg if "/finanzas/" in u and not u.endswith("estado"))
     assert all(h.get("X-API-Key") == CLAVE for _, _, h in reg)            # cabecera documentada por Gelsyn
     salida = json.dumps(res, ensure_ascii=False)
@@ -123,12 +123,12 @@ def test_preflight_apto_hace_pocas_peticiones_todas_get_y_no_imprime_datos_ni_se
 def test_preflight_detecta_campos_faltantes_y_cargas_incompletas():
     reg = []
     r = _rutas_ok()
-    r["/finanzas/facturas"]["data"][0].pop("docDueDate")
+    r["/finanzas/facturas"]["data"][0].pop("vencimiento")
     r["/finanzas/pagos"]["meta"]["ultimaCargaCompleta"] = None
     cli, cfg = _cliente(r, reg)
     res = gp.preflight(cli, cfg)
     assert res["veredicto"] == "NO_APTO"
-    assert any("docDueDate" in p for p in res["problemas"]) and any("pagos" in p and "completa" in p for p in res["problemas"])
+    assert any("vencimiento" in p for p in res["problemas"]) and any("pagos" in p and "completa" in p for p in res["problemas"])
 
 
 def test_preflight_con_forma_desconocida_es_indeterminado_y_no_inventa_un_mapeo():

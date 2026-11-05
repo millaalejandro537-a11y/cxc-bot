@@ -37,7 +37,7 @@ export CXC_GELSYN_ENTORNO=pruebas
 export CXC_GELSYN_BASE_URL="https://<backend-de-pruebas>"                    # sin credenciales ni parámetros
 export CXC_GELSYN_API_KEY="$(security find-generic-password -s cxc-gelsyn-pruebas -w)"
 export CXC_REPORTING_SRC="$HOME/Documents/Trabajo-Sync/Cosprobell/cxc-reporting-core/src"
-python -m cxc_portal.gelsyn_preflight                                         # ≤ 7 GET mínimos; nunca imprime valores de datos
+python -m cxc_portal.gelsyn_preflight                                         # ≤ 6 GET mínimos; nunca imprime valores de datos
 ```
 En Windows: variables de entorno del proceso o *Credential Manager*; en Railway: variables del servicio. **Nunca** en `.env` versionado (`.gitignore` ya excluye `.env*` salvo `.env.example`, que solo lista nombres), ni en argumentos de línea de comandos, prompts o logs. Toda representación de la configuración muestra solo `sha256(clave)[:8]`.
 
@@ -63,7 +63,7 @@ En Windows: variables de entorno del proceso o *Credential Manager*; en Railway:
 3. Un ejemplo **real (sin valores sensibles) de la respuesta** de `GET /finanzas/{clientes,facturas,pagos,aplicacionesPagos,notasCredito}?limit=1` y de `/finanzas/estado`: nombres exactos de campos, valores de `documentStatus`, semántica de `cancelled`/`cancelStatus`, formato de fechas y de importes (¿cadenas decimales?).
 4. Confirmar: ¿las fechas de documento son comerciales o instantes UTC?; ¿`docDate` del pago es la fecha contable?; ¿hay fecha de conciliación/aplicación?
 5. (Sin acción de rotación: decisión vigente, ver §3.) Confirmar que `postgres` no se usa en ningún servicio del Portal ni se comparte fuera de quienes administran la base de pruebas.
-**Por nuestra parte:** guardar la clave como en §4; ejecutar `python -m cxc_portal.gelsyn_preflight` (≤ 7 GET, sin imprimir datos); si el veredicto es `APTO_PARA_MAPEO`, implementar el transporte (`Transporte` del contrato) con el mapeo de §5 y pasarlo por `python -m cxc_portal.validar_fuente`.
+**Por nuestra parte:** guardar la clave como en §4; ejecutar `python -m cxc_portal.gelsyn_preflight` (≤ 6 GET, sin imprimir datos); si el veredicto es `APTO_PARA_MAPEO`, implementar el transporte (`Transporte` del contrato) con el mapeo de §5 y pasarlo por `python -m cxc_portal.validar_fuente`.
 **Validación contra SAP Business One (contabilidad, fuera del repo):**
 1. Controles por cliente desde SAP B1: saldo de cuenta y reporte de antigüedad (`controles_sap.json`: `por_cliente`, `total_global`).
 2. Comparar por cliente: `currentAccountBalance` (Gelsyn) vs saldo de cuenta SAP vs Σ(`docTotal − paidToDate`) de facturas abiertas; toda diferencia se lista (esperables: notas de crédito, anticipos, pagos sin aplicar).
@@ -127,3 +127,8 @@ Ejecución: sesión de solo lectura con la URL provista (archivo 0600; la cuenta
 * **No comparable — evaluación al 04/11:** 11 de 174 clientes (6,3 %) cambian de clase respecto del 08/10 (A→B 5, B→C 3, C→B 2, solo contado→C 1) por facturas y pagos posteriores. Mide deriva en el tiempo, no error de Gelsyn.
 * **No demuestra:** saldos conciliados (siguen sin partidas ni conciliaciones), ni vigencia del dato, ni que la fuente pueda publicarse. La clasificación coincide porque depende de fechas de emisión y pago; el saldo requiere la validación contable contra SAP B1.
 El detalle por código de cliente (sin nombres) se guarda **fuera de Git** en `~/Developer/corrida-en-seco-gelsyn/` (0700/0600).
+
+## 13. Transporte con nombres documentados y validación vía transporte (2026-11-05)
+- `TransporteGelsyn` usa los nombres del PDF (fecha, pagado, ruta, cancelado Y/N/C), deriva el monto del recibo cuando `pagos.total` es NULL y reinicia la lectura (máx. 2) si cambia la versión financiera.
+- Validación con servidor falso alimentado por la copia de pruebas: 174/174 clases idénticas al camino directo, 0 filas descartadas, fuente no publicable.
+- Matriz completa y dependencias externas: `docs/MATRIZ-CONTRATO-GELSYN.md`. Regresión: 760 pasan, 17 omitidas.

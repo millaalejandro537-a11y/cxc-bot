@@ -15,7 +15,7 @@ URL = "postgresql://postgres:CLAVE-INVENTADA-xyz@host-ejemplo.invalid:12345/base
 
 # ------------------------------------------------------------------------------------------------ validador de sentencias
 def test_las_consultas_de_la_herramienta_son_select_sobre_tablas_financieras():
-    assert len(ip.E_CONSULTAS) == 14 and len(ip.E_AMPLIACION) == 7
+    assert len(ip.E_CONSULTAS) == 14 and len(ip.E_AMPLIACION) == 9
     for _, sql in ip.E_CONSULTAS + ip.E_AMPLIACION:
         ip.validar_sql(sql)
     texto = " ".join(sql for _, sql in ip.E_CONSULTAS + ip.E_AMPLIACION).lower()

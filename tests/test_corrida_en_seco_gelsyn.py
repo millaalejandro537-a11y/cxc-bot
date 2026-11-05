@@ -1,5 +1,6 @@
 """Corrida en seco (Gelsyn vs aprobado del 08/10): reconstruccion de la evidencia AL CORTE y comparacion. Datos 100 % sinteticos, sin BD."""
 
+import os
 from datetime import date, datetime
 
 import pytest
@@ -17,7 +18,7 @@ def _f(entry, fecha, total, estado, vence=None, cancelled=False, cliente="C90001
 
 
 def _p(entry, fecha, total, cancelled=False, cliente="C90001"):
-    return {"docEntry": entry, "cardCode": cliente, "docDate": datetime.combine(fecha, datetime.min.time()), "total": total, "cancelled": cancelled}
+    return {"docEntry": entry, "cardCode": cliente, "docDate": datetime.combine(fecha, datetime.min.time()), "total": None, "cashSum": total, "transferSum": 0, "cancelled": cancelled}
 
 
 def _a(pago, factura, monto, cancelado="N", tipo="it_Invoice"):
@@ -105,3 +106,39 @@ def test_el_resumen_es_agregado_y_el_detalle_no_lleva_nombres():
 def test_sin_atestacion_no_se_conecta(monkeypatch, capsys):
     monkeypatch.setattr(ip, "_conectar", lambda u: (_ for _ in ()).throw(AssertionError("no debia conectar")))
     assert c.main([]) == 2 and "atestación" not in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------------------------------------ camino permanente (transporte) == camino directo
+def _con_core():
+    from tests.portal_helpers import ruta_reporting_core
+    if not (ruta_reporting_core() / "cxc_reporting").is_dir():
+        pytest.skip("cxc-reporting-core no esta disponible en este equipo")
+    os.environ.setdefault("CXC_REPORTING_SRC", str(ruta_reporting_core()))
+
+
+def _escenario():
+    fact = [_f(i, date(2026, 1, 1 + i), 100, "bost_Close", vence=date(2026, 1, 1 + i)) for i in range(1, 8)]
+    fact += [_f(20, date(2026, 10, 20), 80, "bost_Open", vence=date(2026, 11, 20)), _f(21, date(2026, 5, 2), 70, "bost_Close", cancelled=True)]
+    pag = [_p(100 + i, date(2026, 1, 1 + i), 100) for i in range(1, 8)] + [_p(300, date(2026, 6, 1), 5)]       # el ultimo pago no aplica a nada (como el 19,8 % de la copia)
+    app = [_a(100 + i, i, 100) for i in range(1, 8)] + [_a(100, None, 3, tipo="it_OpeningBalance")]
+    return _datos(fact, pag, app)
+
+
+def test_el_camino_permanente_da_las_mismas_clases_que_el_directo_y_con_la_tolerancia_por_defecto():
+    _con_core()
+    d = _escenario()
+    directo = c.evaluar(d, ["C90001"], c.CORTE_ACTUAL)
+    via, info = c.evaluar_via_transporte(d, ["C90001"])
+    assert via["C90001"].final == directo["C90001"].final == ps.A
+    assert info["calidad"]["filas_descartadas"] == [] and info["fuente"].apta_para_publicar is False and info["fuente"].tipo == "EMPRESARIAL_PRUEBAS"
+    assert info["fuente"].transporte.excluidos["pagos_sin_aplicacion_a_facturas"] == 1 and info["fuente"].transporte.excluidos["facturas_canceladas"] == 1
+    assert info["fuente"].transporte.excluidos["aplicaciones_a_otros_documentos"] == 1
+
+
+def test_los_pagos_sin_aplicacion_no_bloquean_la_carga_aunque_sean_la_mayoria():
+    _con_core()
+    d = _escenario()
+    d["pagos"] += [_p(400 + i, date(2026, 7, 1), 10) for i in range(40)]                         # 40 pagos sin aplicacion: >> 2 % de las filas
+    via, info = c.evaluar_via_transporte(d, ["C90001"])
+    assert info["calidad"]["estado"] in ("OK", "CON_ADVERTENCIAS") and info["calidad"]["filas_descartadas"] == []
+    assert info["fuente"].transporte.excluidos["pagos_sin_aplicacion_a_facturas"] == 41

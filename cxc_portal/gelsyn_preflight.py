@@ -1,5 +1,5 @@
-"""Preflight de SOLO LECTURA contra el Cosprobell Backend de PRUEBAS (Gelsyn). Hace como maximo 7 peticiones GET minimas y NUNCA imprime valores de datos:
-  GET /health · GET /finanzas/estado · GET /finanzas/{clientes,facturas,pagos,aplicacionesPagos,notasCredito}?limit=1
+"""Preflight de SOLO LECTURA contra el Cosprobell Backend de PRUEBAS (Gelsyn). Hace como maximo 6 peticiones GET minimas y NUNCA imprime valores de datos:
+  GET /health · GET /finanzas/estado · GET /finanzas/{clientes,facturas,pagos,aplicacionesPagos}?limit=1
 Comprueba entorno, versiones/publicacion de cada entidad, `meta` (version, ultimaCargaCompleta, monedas, advertencias) y que las filas traigan los campos
 que el Portal necesita (nombres segun docs/CONEXION-GELSYN-PRUEBAS.md). Si algo no se reconoce, el veredicto es INDETERMINADO: no se inventa un mapeo.
 Uso:  CXC_GELSYN_* en el entorno (ver .env.example) y  python -m cxc_portal.gelsyn_preflight"""
@@ -12,13 +12,13 @@ from typing import Any, Dict, List, Optional
 
 from .gelsyn_config import ConfigGelsyn, ConfigGelsynError, cargar_config, cliente_solo_lectura
 
-# Campos que el Portal necesita por entidad (nombres de columna de la referencia tecnica de Gelsyn, 4/11/2026). Se verifican, no se asumen.
+# Campos que el Portal necesita por entidad: NOMBRES DE TRANSPORTE de /finanzas/* (referencia tecnica de Gelsyn, §3.21; los objetos estrictos traen todas las claves, aunque sean nulables).
+# Se verifican, no se asumen. Las notas de credito no se mapean aun.
 CAMPOS_REQUERIDOS: Dict[str, List[str]] = {
-    "clientes": ["cardCode", "cardName", "salesPersonCode", "uZona", "currentAccountBalance"],
-    "facturas": ["docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "docCurrency", "documentStatus", "cancelled", "paidToDate"],
-    "pagos": ["docEntry", "docNum", "cardCode", "docDate", "total", "cancelled"],
-    "aplicacionesPagos": ["pagoDocEntry", "facturaDocEntry", "sumApplied", "cancelado"],
-    "notasCredito": ["docEntry", "cardCode", "docDate", "docTotal", "facturaBaseEntry", "cancelled"],
+    "clientes": ["cardCode", "nombre", "activo", "bloqueado", "moneda", "saldo", "vendedor", "ruta"],
+    "facturas": ["docEntry", "docNum", "cardCode", "fecha", "vencimiento", "moneda", "total", "pagado", "estado", "cancelado"],
+    "pagos": ["docEntry", "docNum", "cardCode", "fecha", "moneda", "cancelado", "total", "efectivo", "transferencia"],
+    "aplicacionesPagos": ["pagoEntry", "linea", "cardCode", "fecha", "cancelado", "documento", "tipo", "aplicado"],
 }
 META_ESPERADA = ["version", "ultimaCargaCompleta", "monedas", "siguienteCursor", "advertencias"]
 

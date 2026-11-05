@@ -81,7 +81,7 @@ def _pub(t, alias=""):
 
 SQL_FACTURAS = ('SELECT "docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", cancelled FROM facturas WHERE '
                 + _pub("facturas") + ' AND "cardCode" = ANY(%s)')
-SQL_PAGOS = 'SELECT "docEntry", "cardCode", "docDate", total, cancelled FROM pagos WHERE ' + _pub("pagos") + ' AND "cardCode" = ANY(%s)'
+SQL_PAGOS = 'SELECT "docEntry", "cardCode", "docDate", total, "cashSum", "transferSum", cancelled FROM pagos WHERE ' + _pub("pagos") + ' AND "cardCode" = ANY(%s)'
 SQL_APLICACIONES = ('SELECT a."pagoDocEntry", a."facturaDocEntry", a."sumApplied", a.cancelado, a."invoiceType" FROM pagos_facturas a JOIN pagos p ON p."docEntry" = a."pagoDocEntry" WHERE '
                     + _pub("aplicacionesPagos", "a") + ' AND ' + _pub("pagos", "p") + ' AND p."cardCode" = ANY(%s)')
 SQL_CLIENTES = 'SELECT "cardCode" FROM clientes WHERE ' + _pub("clientes") + ' AND "cardCode" = ANY(%s)'
@@ -132,6 +132,66 @@ def construir_facturas(datos: dict, corte: date) -> Dict[str, List[ps.FacturaSAP
 def evaluar(datos: dict, codigos: Sequence[str], corte: date) -> Dict[str, "ps.ResultadoCliente"]:
     fac = construir_facturas(datos, corte)
     return {c: ps.evaluar_cliente(c, fac.get(c, []), corte, PLAZO, None) for c in codigos}
+
+
+# ------------------------------------------------------------------------------------------------ camino PERMANENTE: las mismas filas servidas como /finanzas/* y leidas con TransporteGelsyn + FuenteEmpresarial
+def _txt(v) -> Optional[str]:
+    return None if v is None else format(v, "f") if hasattr(v, "quantize") else str(v)
+
+
+def payloads_transporte(datos: dict, corte_iso: str = "2026-11-04T19:00:00Z") -> Tuple[Dict[str, List[dict]], Dict[str, dict]]:
+    """Reescribe filas SQL como filas de TRANSPORTE (nombres de la referencia §3.21). El renombrado columna->campo es una INFERENCIA documentada (fecha<-docDate, pagado<-paidToDate,
+    pagoEntry<-pagoDocEntry, documento<-facturaDocEntry, aplicado<-sumApplied, efectivo/transferencia<-cashSum/transferSum); solo sirve para probar el codigo con valores reales."""
+    yn = lambda b: "Y" if b else "N"  # noqa: E731
+    pagos = {p["docEntry"]: p for p in datos["pagos"]}
+    datos_t = {
+        "clientes": [{"cardCode": c, "nombre": "SIN NOMBRE (no se lee)", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": None, "vendedor": 0, "zona": None, "ruta": None} for c in sorted(datos["clientes"])],
+        "facturas": [{"docEntry": f["docEntry"], "docNum": f["docNum"], "cardCode": f["cardCode"], "fecha": _d(f["docDate"]).isoformat(), "vencimiento": _d(f["docDueDate"]).isoformat() if f["docDueDate"] else None,
+                      "moneda": "LPS", "total": _txt(f["docTotal"]), "pagado": _txt(f["paidToDate"]), "estado": f["documentStatus"], "cancelado": yn(f["cancelled"])} for f in datos["facturas"]],
+        "pagos": [{"docEntry": p["docEntry"], "docNum": p["docEntry"], "cardCode": p["cardCode"], "fecha": _d(p["docDate"]).isoformat(), "moneda": "LPS", "cancelado": yn(p["cancelled"]),
+                   "total": _txt(p["total"]), "efectivo": _txt(p["cashSum"]), "transferencia": _txt(p["transferSum"]), "cheques": None, "tarjetas": None} for p in datos["pagos"]],
+        "aplicacionesPagos": [{"pagoEntry": a["pagoDocEntry"], "linea": 0, "cardCode": pagos[a["pagoDocEntry"]]["cardCode"] if a["pagoDocEntry"] in pagos else None,
+                               "fecha": _d(pagos[a["pagoDocEntry"]]["docDate"]).isoformat() if a["pagoDocEntry"] in pagos else None, "cancelado": a["cancelado"],
+                               "documento": a["facturaDocEntry"] if a["facturaDocEntry"] is not None else 0, "tipo": a["invoiceType"], "aplicado": _txt(a["sumApplied"])} for a in datos["aplicaciones"]],
+    }
+    metas = {e: {"version": f"v-{e}", "ultimaCargaCompleta": corte_iso, "monedas": ["LPS"], "advertencias": []} for e in datos_t}
+    return datos_t, metas
+
+
+class ServidorFinanzasFalso:
+    """Transporte HTTP FALSO (interfaz del cliente del core) que sirve /finanzas/{entidad} con cursor opaco en meta.siguienteCursor. No hay red."""
+
+    def __init__(self, datos_t: dict, metas: dict, pagina: int = 100):
+        self.datos, self.metas, self.pagina, self.peticiones = datos_t, metas, pagina, 0
+
+    def request(self, method, url, headers, timeout):
+        import urllib.parse as up
+        from cxc_reporting.adapters.backend.client import TransportResponse
+        self.peticiones += 1
+        p = up.urlsplit(url)
+        q = dict(up.parse_qsl(p.query))
+        ent = p.path.rsplit("/", 1)[-1]
+        if method != "GET" or ent not in self.datos:
+            return TransportResponse(404, b"")
+        ini = int(q.get("cursor", "0"))
+        filas = self.datos[ent]
+        sig = str(ini + self.pagina) if ini + self.pagina < len(filas) else None
+        cuerpo = {"data": filas[ini:ini + self.pagina], "meta": {**self.metas[ent], "siguienteCursor": sig}}
+        return TransportResponse(200, json.dumps(cuerpo, default=str).encode())
+
+
+def evaluar_via_transporte(datos: dict, codigos: Sequence[str], hoy: date = date(2026, 11, 5)) -> Tuple[Dict[str, "ps.ResultadoCliente"], dict]:
+    """Camino permanente: TransporteGelsyn (cliente de solo lectura del core) -> FuenteEmpresarial (tolerancia por defecto) -> motor unico. Devuelve resultados y la calidad de la carga."""
+    from . import fuente_empresarial as fe
+    from . import gelsyn_config as gc
+    from . import transporte_gelsyn as tg
+    datos_t, metas = payloads_transporte(datos)
+    cfg = gc.cargar_config({gc.ENV_BASE_URL: "https://backend-pruebas.ejemplo.invalid", gc.ENV_API_KEY: "clave-sintetica-no-real-0123456789", gc.ENV_ENTORNO: "pruebas"})
+    cli = gc.cliente_solo_lectura(cfg, transport=ServidorFinanzasFalso(datos_t, metas), sleep=lambda s: None)
+    f = fe.FuenteEmpresarial(tg.TransporteGelsyn(cli, entorno="pruebas"), hoy=lambda: hoy, max_edad_dias=5)
+    cal = f.recargar()
+    fac = f.facturas_por_cliente(list(codigos))
+    return {c: ps.evaluar_cliente(c, fac.get(c.upper(), []), f.fecha_corte, PLAZO, None) for c in codigos}, {"calidad": cal, "fuente": f}
 
 
 # ------------------------------------------------------------------------------------------------ comparacion y agregados
@@ -213,6 +273,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         finally:
             conn.close()
     resumen, filas = resumir(aprob, datos)
+    if "--via-transporte" in args:
+        codigos = sorted({c for d in aprob.values() for c in d})
+        directo = evaluar(datos, codigos, CORTE_ACTUAL)
+        via, info = evaluar_via_transporte(datos, codigos)
+        cal = info["calidad"]
+        resumen["via_transporte"] = {"clientes": len(codigos), "misma_clase_que_el_camino_directo_al_0411": sum(via[c].final == directo[c].final for c in codigos),
+                                     "distinta": [c for c in codigos if via[c].final != directo[c].final], "estado_calidad": cal["estado"], "filas_descartadas": len(cal["filas_descartadas"]),
+                                     "tipo_fuente": info["fuente"].tipo, "apta_para_publicar": info["fuente"].apta_para_publicar, "fecha_corte": str(info["fuente"].fecha_corte),
+                                     "excluidos": dict(info["fuente"].transporte.excluidos)}
     resumen["lectura"] = {"facturas": len(datos["facturas"]), "pagos": len(datos["pagos"]), "aplicaciones": len(datos["aplicaciones"]), "base": ident["base"]}
     out = Path(opt("--salida", os.path.expanduser("~/Developer/corrida-en-seco-gelsyn")))
     out.mkdir(parents=True, exist_ok=True)

@@ -40,6 +40,7 @@ def test_fechas_comerciales_no_se_adivinan(v, esperado):
     ({"cancelled": "tNO"}, False), ({"cancelled": "tYES"}, True), ({"cancelled": False}, False), ({"cancelled": True}, True),
     ({"cancelled": None, "cancelStatus": "csNo"}, False), ({"cancelled": None, "cancelStatus": "csCancellation"}, True), ({"cancelled": "tNO", "canceladoSap": True}, True),
     ({"cancelled": None}, None), ({"cancelled": "undefined"}, None), ({}, None),
+    ({"cancelado": "N"}, False), ({"cancelado": "Y"}, True), ({"cancelado": "C"}, True), ({"cancelado": None}, None), ({"cancelado": "X"}, None), ({"canceladoSap": "C"}, True),
 ])
 def test_cancelacion_indefinida_no_es_no_cancelado(fila, esperado):
     assert tg.cancelacion(fila) is esperado
@@ -51,37 +52,45 @@ def _meta(ent, **kw):
 
 
 def _datos():
-    clientes = [{"cardCode": "C90001", "cardName": "CLIENTE SINTETICO UNO", "salesPersonCode": 7, "uZona": "LV", "currency": "LPS", "finActivo": True, "currentAccountBalance": 1500.5},
-                {"cardCode": "C90002", "cardName": "CLIENTE SINTETICO DOS", "salesPersonCode": 7, "uZona": None, "currency": "LPS", "finActivo": None, "currentAccountBalance": None},
-                {"cardCode": "C90003", "cardName": "CLIENTE SINTETICO TRES", "salesPersonCode": 8, "uZona": "PB", "currency": "USD", "finActivo": True, "currentAccountBalance": "250.250000"}]
-    base = dict(docDueDate="2026-10-31T00:00:00", docCurrency="LPS", docType="dDocument_Items", sapUpdateDate="2026-11-03T10:00:00Z", cancelStatus="csNo")
+    """Filas con los NOMBRES DE TRANSPORTE de /finanzas/* (referencia tecnica §3.21): fecha, vencimiento, pagado, cancelado Y/N/C, pagoEntry, documento, tipo, aplicado..."""
+    clientes = [{"cardCode": "C90001", "nombre": "CLIENTE SINTETICO UNO", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": "1500.500000", "vendedor": 7, "zona": None, "ruta": "LV"},
+                {"cardCode": "C90002", "nombre": "CLIENTE SINTETICO DOS", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": None, "vendedor": 7, "zona": None, "ruta": None},
+                {"cardCode": "C90003", "nombre": "CLIENTE SINTETICO TRES", "activo": "N", "bloqueado": "Y", "moneda": "USD", "saldo": "250.250000", "vendedor": 8, "zona": None, "ruta": "PB"}]
+    base = {"serie": 1, "vencimiento": "2026-10-31", "fechaDocumento": None, "moneda": "LPS", "totalFC": "0", "totalSC": "0", "pagadoFC": "0", "pagadoSC": "0", "vendedor": 7, "condicionPago": 1, "transId": None}
     facturas = [
-        {**base, "docEntry": 101, "docNum": 5001, "cardCode": "C90001", "docDate": "2026-09-01T00:00:00", "docTotal": 583.6900000000001, "paidToDate": 0, "documentStatus": "bost_Open", "cancelled": "tNO"},
-        {**base, "docEntry": 102, "docNum": 5002, "cardCode": "C90001", "docDate": "2026-08-01T00:00:00", "docTotal": "2500.000000", "paidToDate": "2500.000000", "documentStatus": "bost_Close", "cancelled": "tNO"},
-        {**base, "docEntry": 103, "docNum": 5003, "cardCode": "C90001", "docDate": "2026-08-02T00:00:00", "docTotal": "100", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": "tYES"},
-        {**base, "docEntry": 104, "docNum": 5004, "cardCode": "C90002", "docDate": "2026-08-03T00:00:00", "docTotal": "100", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": None, "cancelStatus": None},
-        {**base, "docEntry": 105, "docNum": 5005, "cardCode": "C90003", "docDate": "2026-08-04T00:00:00", "docTotal": "75.5", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": "tNO", "docCurrency": "USD"},
-        {**base, "docEntry": 106, "docNum": 5006, "cardCode": "C90002", "docDate": "2026-08-05T00:00:00", "docTotal": "10.1234567", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": "tNO"},
+        {**base, "docEntry": 101, "docNum": 5001, "cardCode": "C90001", "fecha": "2026-09-01", "total": "583.6900000000001", "pagado": "0", "estado": "bost_Open", "cancelado": "N"},
+        {**base, "docEntry": 102, "docNum": 5002, "cardCode": "C90001", "fecha": "2026-08-01", "total": "2500.000000", "pagado": "2500.000000", "estado": "bost_Close", "cancelado": "N"},
+        {**base, "docEntry": 103, "docNum": 5003, "cardCode": "C90001", "fecha": "2026-08-02", "total": "100", "pagado": "0", "estado": "bost_Open", "cancelado": "Y"},
+        {**base, "docEntry": 104, "docNum": 5004, "cardCode": "C90002", "fecha": "2026-08-03", "total": "100", "pagado": "0", "estado": "bost_Open", "cancelado": None},
+        {**base, "docEntry": 105, "docNum": 5005, "cardCode": "C90003", "fecha": "2026-08-04", "total": "75.5", "pagado": "0", "estado": "bost_Open", "cancelado": "N", "moneda": "USD"},
+        {**base, "docEntry": 106, "docNum": 5006, "cardCode": "C90002", "fecha": "2026-08-05", "total": "10.1234567", "pagado": "0", "estado": "bost_Open", "cancelado": "N"},
+        {**base, "docEntry": 109, "docNum": 5009, "cardCode": "C90001", "fecha": "2026-08-02", "total": "100", "pagado": "0", "estado": "bost_Close", "cancelado": "C"},    # documento de cancelacion
     ]
+    pb = {"serie": 1, "moneda": "LPS", "transId": None, "total": None, "totalFC": None, "totalSC": None, "cheques": None, "tarjetas": None, "sinAplicarOriginal": None}
     pagos = [
-        {"docEntry": 201, "docNum": 9001, "cardCode": "C90001", "docDate": "2026-08-20T00:00:00", "total": "2500", "cancelled": "tNO", "cancelStatus": "csNo"},
-        {"docEntry": 202, "docNum": 9002, "cardCode": "C90001", "docDate": "2026-08-21T00:00:00", "total": "10", "cancelled": "tYES"},
-        {"docEntry": 203, "docNum": 9003, "cardCode": "C90002", "docDate": "2026-08-22T13:45:00", "total": "5", "cancelled": "tNO"},
-        {"docEntry": 204, "docNum": 9004, "cardCode": "C90003", "docDate": "2026-08-23T05:00:00Z", "total": "20", "cancelled": "tNO"},
+        {**pb, "docEntry": 201, "docNum": 9001, "cardCode": "C90001", "fecha": "2026-08-20", "efectivo": "2500", "transferencia": "0", "cancelado": "N"},
+        {**pb, "docEntry": 202, "docNum": 9002, "cardCode": "C90001", "fecha": "2026-08-21", "efectivo": "10", "transferencia": "0", "cancelado": "Y"},
+        {**pb, "docEntry": 203, "docNum": 9003, "cardCode": "C90002", "fecha": "2026-08-22T13:45:00", "efectivo": "5", "transferencia": "0", "cancelado": "N"},
+        {**pb, "docEntry": 204, "docNum": 9004, "cardCode": "C90003", "fecha": "2026-08-23", "efectivo": "10", "transferencia": "10", "cancelado": "N"},
+        {**pb, "docEntry": 205, "docNum": 9005, "cardCode": "C90002", "fecha": "2026-08-24", "efectivo": "5", "transferencia": "0", "cancelado": "N"},           # sin ninguna aplicacion
+        {**pb, "docEntry": 206, "docNum": 9006, "cardCode": "C90001", "fecha": "2026-08-25", "efectivo": "0", "transferencia": "0", "cancelado": "N"},           # importe propio 0: vale lo que suman sus aplicaciones
     ]
-    aplic = [{"pagoDocEntry": 201, "facturaDocEntry": 102, "sumApplied": "2500.000000", "cancelado": "tNO"},
-             {"pagoDocEntry": 202, "facturaDocEntry": 101, "sumApplied": "10", "cancelado": "tNO"},
-             {"pagoDocEntry": 204, "facturaDocEntry": None, "sumApplied": "20", "cancelado": "tNO"},
-             {"pagoDocEntry": 204, "facturaDocEntry": 105, "sumApplied": "20", "cancelado": "tYES"}]
+    ab = {"linea": 0, "cuota": None, "lineaDocumento": None, "aplicadoFC": "0", "aplicadoSC": "0"}
+    aplic = [{**ab, "pagoEntry": 201, "cardCode": "C90001", "fecha": "2026-08-20", "cancelado": "N", "documento": 102, "tipo": "it_Invoice", "aplicado": "2500.000000"},
+             {**ab, "pagoEntry": 202, "cardCode": "C90001", "fecha": "2026-08-21", "cancelado": "N", "documento": 101, "tipo": "it_Invoice", "aplicado": "10"},
+             {**ab, "pagoEntry": 203, "cardCode": "C90002", "fecha": "2026-08-22", "cancelado": "N", "documento": 104, "tipo": "it_Invoice", "aplicado": "5"},
+             {**ab, "pagoEntry": 204, "cardCode": "C90003", "fecha": "2026-08-23", "cancelado": "N", "documento": 0, "tipo": "it_OpeningBalance", "aplicado": "20"},        # saldo de apertura: no es factura
+             {**ab, "pagoEntry": 204, "cardCode": "C90003", "fecha": "2026-08-23", "cancelado": "Y", "documento": 105, "tipo": "it_Invoice", "aplicado": "20"},          # aplicacion cancelada
+             {**ab, "pagoEntry": 206, "cardCode": "C90001", "fecha": "2026-08-25", "cancelado": "N", "documento": 101, "tipo": "it_Invoice", "aplicado": "40"}]
     return {"clientes": clientes, "facturas": facturas, "pagos": pagos, "aplicacionesPagos": aplic}
 
 
 class Servidor:
     """Backend FALSO: sirve `/finanzas/{entidad}` paginando de a `pagina` filas con cursor en `meta.siguienteCursor` y registra las peticiones."""
 
-    def __init__(self, datos=None, pagina=2, cambiar_version_en_pagina=None, metas=None):
+    def __init__(self, datos=None, pagina=2, cambiar_version_en_pagina=None, metas=None, cambios=1):
         self.datos, self.pagina, self.registro = _datos() if datos is None else datos, pagina, []
-        self.cambiar, self.metas = cambiar_version_en_pagina, metas or {}
+        self.cambiar, self.metas, self.cambios = cambiar_version_en_pagina, metas or {}, cambios
 
     def request(self, method, url, headers, timeout):
         from cxc_reporting.adapters.backend.client import TransportResponse
@@ -97,7 +106,8 @@ class Servidor:
         trozo = filas[ini:ini + self.pagina]
         sig = str(ini + self.pagina) if ini + self.pagina < len(filas) else None
         meta = _meta(ent, siguienteCursor=sig, **self.metas.get(ent, {}))
-        if self.cambiar and ini > 0 and ent == self.cambiar:
+        if self.cambiar and ini > 0 and ent == self.cambiar and self.cambios > 0:
+            self.cambios -= 1
             meta["version"] = "v-otra"
         return TransportResponse(200, json.dumps({"data": trozo, "meta": meta}).encode())
 
@@ -119,21 +129,39 @@ def test_mapeo_conserva_nulos_importes_exactos_monedas_y_excluye_canceladas():
     t = _transporte(s)
     t.metadatos()
     cl = {c["codigo_sap"]: c for c in t.clientes()}
-    assert cl["C90002"]["zona"] is None and cl["C90002"]["activo"] is None and cl["C90001"]["activo"] is True and cl["C90003"]["moneda"] == "USD"
+    assert cl["C90002"]["zona"] is None and cl["C90001"]["zona"] == "LV" and cl["C90001"]["activo"] is True and cl["C90003"]["activo"] is False and cl["C90003"]["moneda"] == "USD"
+    assert cl["C90001"]["vendedor_codigo"] == "7"
     sal = {x["codigo_cliente"]: x for x in t.saldos()}
     assert sal["C90001"]["saldo_abierto"] == "1500.5" and sal["C90003"]["saldo_abierto"] == "250.25" and "C90002" not in sal       # nulo => sin fila, jamas 0
     f = {x["id_factura"]: x for x in t.facturas()}
-    assert set(f) == {"101", "102", "104", "105", "106"} and t.excluidos["facturas_canceladas"] == 1                               # 103 cancelada: fuera
+    assert set(f) == {"101", "102", "104", "105", "106"} and t.excluidos["facturas_canceladas"] == 2                               # 103 (Y) y 109 (C: cancelacion): fuera
     assert f["101"]["total"] == "583.69" and f["101"]["estado"] == "O" and f["102"]["estado"] == "C" and f["102"]["aplicado"] == "2500"
     assert f["101"]["fecha_factura"] == "2026-09-01" and f["101"]["fecha_vencimiento"] == "2026-10-31" and f["105"]["moneda"] == "USD"
     assert f["104"]["estado"] is None                                                                                               # cancelacion indefinida: invalida, no "no cancelada"
     assert f["106"]["total"] is None                                                                                                # 7.º decimal real: rechazado, no redondeado
     r = {x["id_recibo"]: x for x in t.recibos()}
-    assert set(r) == {"201", "203", "204"} and t.excluidos["pagos_cancelados"] == 1
-    assert r["201"]["aplicaciones"] == [{"id_factura": "102", "monto": "2500"}] and r["201"]["fecha_contable"] == "2026-08-20"
+    assert set(r) == {"201", "203", "206"} and t.excluidos["pagos_cancelados"] == 1
+    assert r["201"]["monto"] == "2500" and r["201"]["aplicaciones"] == [{"id_factura": "102", "monto": "2500"}] and r["201"]["fecha_contable"] == "2026-08-20"
     assert r["203"]["fecha_contable"] is None                                                                                       # hora ambigua sin zona: no se adivina
-    assert r["204"]["fecha_contable"] == "2026-08-22" and r["204"]["aplicaciones"] == []                                           # 05:00Z = 23:00 del 22/8 en Honduras
-    assert t.excluidos["aplicaciones_sin_factura"] == 1 and t.excluidos["aplicaciones_canceladas_o_indeterminadas"] == 1
+    assert r["206"]["monto"] == "40" and t.excluidos["recibos_con_importe_tomado_de_sus_aplicaciones"] == 1                         # importe propio 0: suma de sus aplicaciones
+    assert t.excluidos["pagos_sin_aplicacion_a_facturas"] == 2                                                                      # 204 (solo saldo de apertura/cancelada) y 205: no respaldan ninguna factura
+    assert t.excluidos["aplicaciones_a_otros_documentos"] == 1 and t.excluidos["aplicaciones_canceladas_o_indeterminadas"] == 1
+
+
+def test_el_importe_del_pago_se_deriva_de_sus_componentes_cuando_total_es_nulo_como_en_la_copia():
+    assert tg.TransporteGelsyn._monto_pago({"total": None, "efectivo": "10.5", "transferencia": "4.25", "cheques": None, "tarjetas": None}) == "14.75"
+    assert tg.TransporteGelsyn._monto_pago({"total": "99", "efectivo": "1", "transferencia": "1"}) == "99"
+    assert tg.TransporteGelsyn._monto_pago({"total": None, "efectivo": None, "transferencia": "1"}) is None                           # un componente ausente: no se supone cero
+
+
+def test_si_ninguna_aplicacion_tiene_el_tipo_de_factura_la_carga_se_rechaza_en_vez_de_asumir():
+    d = _datos()
+    for a in d["aplicacionesPagos"]:
+        a["tipo"] = "13"                                                                                                            # vocabulario distinto al observado
+    t = _transporte(Servidor(datos=d))
+    t.metadatos()
+    with pytest.raises(fe.ContratoIncumplido, match="vocabulario de `tipo`"):
+        t.recibos()
 
 
 def test_metadatos_corte_comercial_version_por_entidad_y_completitud():
@@ -150,16 +178,25 @@ def test_pagina_con_cursor_de_meta_y_conserva_la_version_solo_get():
     s = Servidor(pagina=2)
     t = _transporte(s)
     t.metadatos()
-    assert len(t.facturas()) + t.excluidos["facturas_canceladas"] == 6                                                              # 3 paginas de 2
+    assert len(t.facturas()) + t.excluidos["facturas_canceladas"] == 7                                                              # 4 paginas de 2
     assert {m for m, _, _ in s.registro} == {"GET"} and all(h.get("X-API-Key") == CLAVE for _, _, h in s.registro)
     paginas_fact = [u for _, u, _ in s.registro if "/finanzas/facturas" in u]
-    assert len(paginas_fact) == 3 and "cursor" not in paginas_fact[0] and all("version=v-facturas-1" in u and "cursor=" in u for u in paginas_fact[1:])
+    assert len(paginas_fact) == 4 and "cursor" not in paginas_fact[0] and all("version=v-facturas-1" in u and "cursor=" in u for u in paginas_fact[1:])
     assert all("limit=100" in u for _, u, _ in s.registro)
 
 
-def test_si_la_version_cambia_a_mitad_de_la_paginacion_la_carga_se_rechaza():
-    t = _transporte(Servidor(pagina=2, cambiar_version_en_pagina="facturas"))
-    with pytest.raises(fe.ContratoIncumplido, match="versión cambió"):
+def test_si_la_version_cambia_a_mitad_de_la_paginacion_se_reinicia_desde_la_primera_pagina():
+    s = Servidor(pagina=2, cambiar_version_en_pagina="facturas", cambios=1)                 # VERSION_FINANCIERA_CAMBIO una vez: la segunda pasada es estable
+    t = _transporte(s)
+    t.metadatos()
+    assert any("se reinició desde la primera página" in a for a in t.advertencias)
+    paginas = [u for _, u, _ in s.registro if "/finanzas/facturas" in u]
+    assert len([u for u in paginas if "cursor=" not in u]) == 2                              # dos arranques desde la primera pagina
+
+
+def test_si_la_version_no_se_estabiliza_la_carga_se_rechaza():
+    t = _transporte(Servidor(pagina=2, cambiar_version_en_pagina="facturas", cambios=99))
+    with pytest.raises(fe.ContratoIncumplido, match="cambió 3 veces"):
         t.metadatos()
 
 
@@ -230,10 +267,10 @@ CORTES_REALES = {"clientes": {"ultimaCargaCompleta": "2026-10-27T18:33:28Z"}, "a
 
 def _datos_con_facturas_recientes():
     d = _datos()
-    base = {"cardCode": "C90001", "docTotal": "50", "paidToDate": "0", "documentStatus": "bost_Open", "cancelled": False, "cancelStatus": None, "docCurrency": "LPS",
-            "docDueDate": "2026-12-30T00:00:00"}
-    d["facturas"] += [{**base, "docEntry": 107, "docNum": 5007, "docDate": "2026-10-28T00:00:00"},       # despues del corte de clientes
-                      {**base, "docEntry": 108, "docNum": 5008, "docDate": "2026-11-04T00:00:00"}]       # el mismo dia del corte de documentos
+    base = {"serie": 1, "cardCode": "C90001", "total": "50", "pagado": "0", "estado": "bost_Open", "cancelado": "N", "moneda": "LPS", "vencimiento": "2026-12-30", "fechaDocumento": None,
+            "totalFC": "0", "totalSC": "0", "pagadoFC": "0", "pagadoSC": "0", "vendedor": 7, "condicionPago": 1, "transId": None}
+    d["facturas"] += [{**base, "docEntry": 107, "docNum": 5007, "fecha": "2026-10-28"},                  # despues del corte de clientes
+                      {**base, "docEntry": 108, "docNum": 5008, "fecha": "2026-11-04"}]                  # el mismo dia del corte de documentos
     return d
 
 
@@ -263,7 +300,7 @@ def test_con_cortes_distintos_el_saldo_de_control_no_se_emite_ni_se_presenta_com
     cal = f.recargar()
     assert t.saldos() == [] and t.excluidos["saldos_de_control_de_otro_corte"] == 3
     assert f.saldo_abierto("C90001") != 1500.5                                                    # el saldo de control (otro corte) NO se mezcla: se muestra la suma de documentos abiertos
-    assert abs(f.saldo_abierto("C90001") - (583.69 + 50 + 50)) < 0.01
+    assert abs(f.saldo_abierto("C90001") - (583.69 + 50 + 50)) < 0.01                          # exactamente la suma de sus documentos abiertos (pagado = 0)
     assert any("NO se emite ni se presenta como saldo conciliado" in p for p in cal["problemas"])
     assert cal["diferencias_saldo"] == []                                                         # y no se fabrican diferencias contra un saldo de otra fecha
 
