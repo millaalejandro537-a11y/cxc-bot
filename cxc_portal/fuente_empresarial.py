@@ -279,7 +279,7 @@ class FuenteEmpresarial:
         edad = ((hoy or self._hoy()) - self.fecha_corte).days
         motivo = "; ".join(self.calidad.get("problemas", [])[:3]) or "Carga validada."
         if not self.en_vivo:
-            motivo = "FUENTE SIMULADA: " + motivo
+            motivo = ("FUENTE SIMULADA: " if self.tipo == TIPO_SIMULADA else "COPIA DE PRUEBAS (no es dato vivo): ") + motivo
         return {"tipo": self.tipo, "fecha_corte": self.fecha_corte.isoformat(), "edad_dias": edad, "vigente": self._vigente_hoy() and self.en_vivo,
                 "calidad": self.calidad.get("estado"), "motivo": motivo, "ultima_carga_ok": self.ultima_carga_ok}
 
