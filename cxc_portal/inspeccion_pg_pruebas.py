@@ -87,9 +87,10 @@ def descripcion_destino(url: str) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ consultas (lista cerrada)
-def _pub(t: str) -> str:
+def _pub(t: str, alias: str = "") -> str:
     """Filtro por version publicada (finVersion = activoId de su entidad en finanzas_control)."""
-    return f'"finVersion"::text = (SELECT "activoId"::text FROM finanzas_control WHERE entidad = \'{t}\')'
+    col = f'{alias}."finVersion"' if alias else '"finVersion"'
+    return f'{col}::text = (SELECT "activoId"::text FROM finanzas_control WHERE entidad = \'{t}\')'
 
 
 E_CONSULTAS: List[Tuple[str, str]] = [
@@ -123,6 +124,36 @@ E_CONSULTAS: List[Tuple[str, str]] = [
                'count(*) FILTER (WHERE abs(c."currentAccountBalance" - coalesce(s.pendiente, 0)) > 100) AS con_diferencia_mayor_100 '
                'FROM clientes c LEFT JOIN (SELECT "cardCode", sum(greatest("docTotal" - "paidToDate", 0)) AS pendiente FROM facturas WHERE ' + _pub("facturas") + ' GROUP BY 1) s ON s."cardCode" = c."cardCode" '
                'WHERE c."currentAccountBalance" IS NOT NULL AND ' + _pub("clientes").replace('"finVersion"', 'c."finVersion"')),
+]
+
+
+# Ampliacion (segunda ronda, tambien SELECT agregados): cortes entre entidades, pagos sin aplicar, desglose de saldos, notas de credito, formato de codigos.
+E_AMPLIACION: List[Tuple[str, str]] = [
+    ("cortes_facturas", 'SELECT count(*) FILTER (WHERE "docDate" > DATE \'2026-10-27\') AS despues_27oct, count(*) FILTER (WHERE "docDate" > DATE \'2026-10-30\') AS despues_30oct, '
+                        'count(*) FILTER (WHERE "docDate" > DATE \'2026-11-03\') AS despues_3nov, count(*) FILTER (WHERE "docDueDate" IS NULL) AS sin_vencimiento, '
+                        'count(*) FILTER (WHERE "documentStatus" = \'bost_Open\' AND "paidToDate" > 0) AS abiertas_con_pago_parcial, '
+                        'count(*) FILTER (WHERE "documentStatus" = \'bost_Close\' AND NOT cancelled AND "paidToDate" < "docTotal") AS cerradas_no_pagadas_integras, '
+                        'min("docEntry") AS docentry_min FROM facturas WHERE ' + _pub("facturas")),
+    ("cortes_pagos", 'SELECT count(*) FILTER (WHERE p."docDate" > DATE \'2026-10-30\') AS pagos_despues_30oct, '
+                     'count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM pagos_facturas a WHERE a."pagoDocEntry" = p."docEntry")) AS pagos_sin_aplicacion, '
+                     'count(*) FILTER (WHERE p."sinAplicarOriginal" > 0) AS con_saldo_sin_aplicar FROM pagos p WHERE ' + _pub("pagos", "p")),
+    ("saldos_detalle", 'SELECT sum(c."currentAccountBalance") AS suma_control, sum(coalesce(s.pendiente, 0)) AS suma_pendiente_documentos, '
+                       'count(*) FILTER (WHERE c."currentAccountBalance" > coalesce(s.pendiente, 0) + 0.01) AS control_mayor, '
+                       'count(*) FILTER (WHERE c."currentAccountBalance" < coalesce(s.pendiente, 0) - 0.01) AS control_menor, '
+                       'count(*) FILTER (WHERE c."currentAccountBalance" < -0.01) AS control_negativo FROM clientes c LEFT JOIN (SELECT "cardCode", '
+                       'sum(greatest("docTotal" - "paidToDate", 0)) AS pendiente FROM facturas WHERE ' + _pub("facturas") + ' GROUP BY 1) s ON s."cardCode" = c."cardCode" WHERE ' + _pub("clientes", "c")),
+    ("notas_credito", 'SELECT count(*) AS n, count(*) FILTER (WHERE cancelled) AS canceladas, coalesce(sum("docTotal") FILTER (WHERE NOT cancelled), 0) AS total_vigente, '
+                      'count(DISTINCT "cardCode") AS clientes, min("docDate") AS fecha_min, max("docDate") AS fecha_max FROM notas_credito WHERE ' + _pub("notasCredito")),
+    ("codigos_clientes", 'SELECT count(*) AS n, count(DISTINCT "cardCode") AS distintos, count(*) FILTER (WHERE "cardCode" !~ \'^C[0-9]+$\') AS codigos_no_estandar FROM clientes WHERE ' + _pub("clientes")),
+    ("cobertura_de_cobro", 'SELECT count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\') AS cerradas_vigentes, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) = 0) AS cerradas_sin_ninguna_aplicacion, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) > 0 AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS cerradas_con_aplicaciones_parciales, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) >= f."docTotal" - 0.01) AS cerradas_cobradas_por_aplicaciones, '
+                           'count(DISTINCT f."cardCode") FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS clientes_con_cerradas_sin_cobro_acreditado '
+                           'FROM facturas f LEFT JOIN (SELECT "facturaDocEntry", sum("sumApplied") AS suma FROM pagos_facturas WHERE ' + _pub("aplicacionesPagos")
+                           + ' AND cancelado = \'N\' AND "facturaDocEntry" IS NOT NULL GROUP BY 1) ap ON ap."facturaDocEntry" = f."docEntry" WHERE ' + _pub("facturas", "f") + ' AND NOT f.cancelled'),
+    ("aplicaciones_vs_pago", 'SELECT count(*) AS pagos_con_aplicado_mayor_al_total FROM (SELECT p."docEntry" FROM pagos p JOIN pagos_facturas a ON a."pagoDocEntry" = p."docEntry" WHERE '
+                             + _pub("pagos", "p") + ' AND ' + _pub("aplicacionesPagos", "a") + ' AND a.cancelado = \'N\' GROUP BY p."docEntry", p.total HAVING sum(a."sumApplied") > p.total + 0.01) x'),
 ]
 
 
@@ -195,6 +226,20 @@ def inspeccionar(sesion: Sesion, destino: dict, atestacion: str) -> dict:
     return out
 
 
+def ampliar(sesion: Sesion) -> dict:
+    out: Dict[str, Any] = {}
+    for nombre, sql in E_AMPLIACION:
+        try:
+            out[nombre] = [{k: _jsonable(v) for k, v in fila.items()} for fila in sesion.consulta(sql)]
+        except Exception as e:  # noqa: BLE001
+            out[nombre] = {"error": type(e).__name__}
+            try:
+                sesion.conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     atest = args[args.index("--confirmo-servicio-pruebas") + 1] if "--confirmo-servicio-pruebas" in args and args.index("--confirmo-servicio-pruebas") + 1 < len(args) else None
@@ -211,7 +256,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"No se pudo conectar ({type(e).__name__}).", file=sys.stderr)
         return 2
     try:
-        res = inspeccionar(Sesion(conn), descripcion_destino(url), atest)
+        ses = Sesion(conn)
+        res = inspeccionar(ses, descripcion_destino(url), atest)
+        if "--ampliacion" in args and res.get("veredicto") != "IDENTIDAD_NO_CONFIRMADA":
+            res["ampliacion"] = ampliar(ses)
     finally:
         try:
             conn.rollback()
