@@ -146,10 +146,11 @@ E_AMPLIACION: List[Tuple[str, str]] = [
                       'count(DISTINCT "cardCode") AS clientes, min("docDate") AS fecha_min, max("docDate") AS fecha_max FROM notas_credito WHERE ' + _pub("notasCredito")),
     ("codigos_clientes", 'SELECT count(*) AS n, count(DISTINCT "cardCode") AS distintos, count(*) FILTER (WHERE "cardCode" !~ \'^C[0-9]+$\') AS codigos_no_estandar FROM clientes WHERE ' + _pub("clientes")),
     ("cobertura_de_cobro", 'SELECT count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\') AS cerradas_vigentes, '
-                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) = 0) AS cerradas_sin_ninguna_aplicacion, '
-                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) > 0 AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS cerradas_con_aplicaciones_parciales, '
-                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) >= f."docTotal" - 0.01) AS cerradas_cobradas_por_aplicaciones, '
-                           'count(DISTINCT f."cardCode") FILTER (WHERE f."documentStatus" = \'bost_Close\' AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS clientes_con_cerradas_sin_cobro_acreditado '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" <= 0.01) AS cerradas_total_cero, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" > 0.01 AND coalesce(ap.suma, 0) = 0) AS cerradas_sin_ninguna_aplicacion, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" > 0.01 AND coalesce(ap.suma, 0) > 0 AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS cerradas_con_aplicaciones_parciales, '
+                           'count(*) FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" > 0.01 AND coalesce(ap.suma, 0) >= f."docTotal" - 0.01) AS cerradas_cobradas_por_aplicaciones, '
+                           'count(DISTINCT f."cardCode") FILTER (WHERE f."documentStatus" = \'bost_Close\' AND f."docTotal" > 0.01 AND coalesce(ap.suma, 0) < f."docTotal" - 0.01) AS clientes_con_cerradas_sin_cobro_acreditado '
                            'FROM facturas f LEFT JOIN (SELECT "facturaDocEntry", sum("sumApplied") AS suma FROM pagos_facturas WHERE ' + _pub("aplicacionesPagos")
                            + ' AND cancelado = \'N\' AND "facturaDocEntry" IS NOT NULL GROUP BY 1) ap ON ap."facturaDocEntry" = f."docEntry" WHERE ' + _pub("facturas", "f") + ' AND NOT f.cancelled'),
     ("aplicaciones_vs_pago", 'SELECT count(*) AS pagos_con_aplicado_mayor_al_total FROM (SELECT p."docEntry" FROM pagos p JOIN pagos_facturas a ON a."pagoDocEntry" = p."docEntry" WHERE '
