@@ -163,3 +163,13 @@ def test_una_consulta_que_falla_se_informa_sin_detener_el_resto():
     finally:
         FakeCur.execute = original
     assert r["resultados"]["dominio_clientes"] == {"error": "RuntimeError"} and any("dominio_clientes" in p for p in r["problemas"]) and "fechas" in r["resultados"]
+
+
+def test_esquema_cxc_solo_tablas_permitidas_y_nunca_credenciales():
+    ip.validar_sql("SELECT count(*) AS n FROM cxc.rutas")
+    for prohibida in ("usuarios", "sesiones", "agentes_impresion"):
+        with pytest.raises(ip.InspeccionError):
+            ip.validar_sql(f"SELECT count(*) AS n FROM cxc.{prohibida}")
+    with pytest.raises(ip.InspeccionError):
+        ip.validar_sql("SELECT * FROM cxc.rutas; DELETE FROM cxc.rutas")
+    assert set(ip.CXC_CONTABLES).isdisjoint(ip.CXC_PROHIBIDAS) and len(ip.CXC_CONTABLES) + len(ip.CXC_PROHIBIDAS) == 26

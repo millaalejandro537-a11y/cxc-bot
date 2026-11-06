@@ -41,6 +41,13 @@ CAMPOS_PORTAL: Dict[str, List[str]] = {
 }
 
 
+# Esquema `cxc` (persistencia del Portal en la BD de pruebas): SOLO existencia y conteos de estas tablas. Nunca usuarios, sesiones ni agentes_impresion (credenciales/tokens), jamas su contenido.
+CXC_CONTABLES = ("alertas", "auditoria", "cambios", "candidatos", "clientes_ruta", "cola_impresion", "configuracion", "decisiones", "documentos", "excel_rutas", "feriados",
+                 "folder_hwm", "hojas_visita", "meta", "notificaciones", "rutas", "salida_documentos", "salida_resumen", "salidas", "vendedores", "visita_eventos", "visitas", "zonas")
+CXC_PROHIBIDAS = ("usuarios", "sesiones", "agentes_impresion")
+VISTAS_CATALOGO = ("information_schema.tables", "information_schema.columns", "information_schema.triggers")
+
+
 class InspeccionError(RuntimeError):
     """Mensajes sin secretos."""
 
@@ -53,11 +60,24 @@ def validar_sql(sql: str) -> str:
     if ESCRITURA.search(re.sub(r"'[^']*'", "''", s)):
         raise InspeccionError("Sentencia con palabras de escritura/DDL no permitidas.")
     for t in re.findall(r'(?i)\b(?:from|join)\s+"?([A-Za-z_][A-Za-z0-9_.]*)"?', s):
-        if t.lower() in ("information_schema.tables", "information_schema.columns"):      # unicas vistas de catalogo admitidas (sin pg_catalog: ahi viven roles y hashes)
+        if t.lower() in VISTAS_CATALOGO:      # unicas vistas de catalogo admitidas (sin pg_catalog: ahi viven roles y hashes)
+            continue
+        if t.startswith("cxc.") and t[4:] in CXC_CONTABLES:      # solo para count(*) (ver E_CXC)
             continue
         if t not in TABLAS or PROHIBIDO.search(t):
             raise InspeccionError(f"Tabla fuera de la lista financiera: {t.split('.')[0]}")
     return s.rstrip(";")
+
+
+def inspeccionar_cxc(sesion: "Sesion") -> dict:
+    """Existencia, columnas y NUMERO de filas de las tablas cxc permitidas (sin leer contenido). Las prohibidas solo se reportan como 'no consultadas'."""
+    ex = {r["table_name"]: r for r in sesion.consulta("SELECT table_name FROM information_schema.tables WHERE table_schema = 'cxc' AND table_type = 'BASE TABLE'")}
+    cols = {}
+    for r in sesion.consulta("SELECT table_name, count(*) AS n FROM information_schema.columns WHERE table_schema = 'cxc' GROUP BY table_name"):
+        cols[r["table_name"]] = r["n"]
+    filas = {t: (sesion.consulta(f"SELECT count(*) AS n FROM cxc.{t}")[0]["n"] if t in ex else None) for t in CXC_CONTABLES}
+    trg = sorted({r["trigger_name"] for r in sesion.consulta("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema IN ('cxc', 'public')")})
+    return {"tablas_cxc_existentes": len(ex), "columnas_por_tabla": cols, "filas_por_tabla": filas, "no_consultadas": [t for t in CXC_PROHIBIDAS if t in ex], "triggers": trg}
 
 
 def leer_url(env: Optional[Dict[str, str]] = None) -> str:
