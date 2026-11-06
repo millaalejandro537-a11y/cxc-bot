@@ -23,12 +23,13 @@ from . import transporte_gelsyn as tg
 ENV_ATESTACION = "CXC_GELSYN_PG_ATESTACION"      # debe valer "Cosprobell-pruebas": quien la define afirma que la URL es de ESE servicio
 MODO_FUENTE = "gelsyn-pg-pruebas"
 
-SQL_CLIENTES_TODOS = 'SELECT "cardCode", "salesPersonCode" AS vendedor, "uZona" AS ruta FROM clientes WHERE ' + ip._pub("clientes")
+SQL_CLIENTES_TODOS = 'SELECT "cardCode", "cardName" AS nombre, "salesPersonCode" AS vendedor, "uZona" AS ruta FROM clientes WHERE ' + ip._pub("clientes")
 SQL_FACTURAS_TODAS = ('SELECT "docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", cancelled FROM facturas WHERE '
                       + ip._pub("facturas"))
 SQL_PAGOS_TODOS = 'SELECT "docEntry", "cardCode", "docDate", total, "cashSum", "transferSum", cancelled FROM pagos WHERE ' + ip._pub("pagos")
 SQL_APLICACIONES_TODAS = ('SELECT a."pagoDocEntry", a."facturaDocEntry", a."sumApplied", a.cancelado, a."invoiceType" FROM pagos_facturas a JOIN pagos p ON p."docEntry" = a."pagoDocEntry" WHERE '
                           + ip._pub("aplicacionesPagos", "a") + ' AND ' + ip._pub("pagos", "p"))
+SQL_VENDEDORES = 'SELECT "salesEmployeeCode" AS codigo, "salesEmployeeName" AS nombre FROM vendedores WHERE ' + ip._pub("vendedores")
 SQL_CORTES = 'SELECT entidad, "publicadoEn" FROM finanzas_control WHERE entidad IN (\'clientes\', \'facturas\', \'pagos\', \'aplicacionesPagos\')'
 
 
@@ -41,11 +42,16 @@ def verificar_identidad(ses: "ip.Sesion") -> None:
     conteos = {t: ses.consulta(f"SELECT count(*) AS n FROM {t}")[0]["n"] for t in ("facturas", "pagos", "pagos_facturas", "clientes")}
     if not ip.tablas_compatibles(n) or any(conteos[t] != ip.TABLAS[t] for t in conteos):
         raise FuentePgError("Identidad no confirmada: la base no coincide con la copia documentada de Cosprobell-pruebas. No se lee nada más.")
+    try:
+        ip.verificar_estructura(ses)
+    except ip.InspeccionError as e:
+        raise FuentePgError(f"Identidad no confirmada: {e}") from None
 
 
 def leer_todo(ses: "ip.Sesion") -> dict:
     cli = ses.consulta(SQL_CLIENTES_TODOS)
-    return {"clientes": {r["cardCode"] for r in cli}, "clientes_info": {r["cardCode"]: {"vendedor": r["vendedor"], "ruta": r["ruta"]} for r in cli},
+    return {"clientes": {r["cardCode"] for r in cli}, "vendedores": {r["codigo"]: r["nombre"] for r in ses.consulta(SQL_VENDEDORES)},
+            "clientes_info": {r["cardCode"]: {"nombre": r["nombre"], "vendedor": r["vendedor"], "ruta": r["ruta"]} for r in cli},
             "facturas": ses.consulta(SQL_FACTURAS_TODAS), "pagos": ses.consulta(SQL_PAGOS_TODOS), "aplicaciones": ses.consulta(SQL_APLICACIONES_TODAS)}
 
 
@@ -113,12 +119,13 @@ class LectorPg:
 class FuentePgPruebas(fe.FuenteEmpresarial):
     """`FuenteEmpresarial` sobre la copia PG de pruebas, recargable sin reiniciar. Una recarga fallida conserva la ultima carga buena (DEGRADADA)."""
 
-    def __init__(self, lector: LectorPg, servidor: "ces.ServidorFinanzasFalso", **kw):
+    def __init__(self, lector: LectorPg, servidor: "ces.ServidorFinanzasFalso", vendedores: Optional[Dict[Any, str]] = None, **kw):
         cfg = gc.cargar_config({gc.ENV_BASE_URL: "https://pg-pruebas-local.invalid", gc.ENV_API_KEY: "sin-llave-lectura-local-0123456789", gc.ENV_ENTORNO: "pruebas"})
         cliente = gc.cliente_solo_lectura(cfg, transport=servidor, sleep=lambda s: None)
         super().__init__(tg.TransporteGelsyn(cliente, entorno="pruebas"), **kw)
         self.lector, self.servidor = lector, servidor
         self.lecturas_pg = 1
+        self.vendedores_nombres: Dict[Any, str] = dict(vendedores or {})
         self.ultima_lectura_pg: Optional[str] = None
 
     def recargar(self) -> Dict[str, Any]:
@@ -134,6 +141,7 @@ class FuentePgPruebas(fe.FuenteEmpresarial):
                 return self.calidad
             nuevo = _servidor(datos, cortes)
             self.servidor.datos, self.servidor.metas = nuevo.datos, nuevo.metas
+            self.vendedores_nombres = dict(datos.get("vendedores", {}))
             self.lecturas_pg += 1
         out = super().recargar()
         self.ultima_lectura_pg = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -149,11 +157,20 @@ class FuentePgPruebas(fe.FuenteEmpresarial):
     def conciliacion(self) -> Dict[str, Any]:
         return self.lector.conciliacion()
 
+    def clientes_financieros(self) -> Dict[str, dict]:
+        """Zona (`uZona`), vendedor y estado FINANCIEROS por cliente, de la ultima carga (solo lectura)."""
+        out = {}
+        for k, v in self._datos()["clientes"].items():
+            cod = v.get("vendedor_codigo")
+            vn = self.vendedores_nombres.get(int(cod)) if cod is not None and str(cod).lstrip("-").isdigit() else None
+            out[k] = {"nombre": v.get("nombre"), "vendedor_codigo": cod, "vendedor_nombre": vn, "zona": v.get("zona"), "activo": v.get("activo")}
+        return out
+
 
 def crear_fuente_pg_pruebas(env: Optional[Dict[str, str]] = None, conectar: Callable[[str], Any] = ip._conectar, hoy: Callable[[], date] = date.today,
                             max_edad_dias: int = 5) -> "FuentePgPruebas":
     lector = LectorPg(env, conectar)
     datos, cortes = lector.leer()
-    fuente = FuentePgPruebas(lector, _servidor(datos, cortes), hoy=hoy, max_edad_dias=max_edad_dias)
+    fuente = FuentePgPruebas(lector, _servidor(datos, cortes), vendedores=datos.get("vendedores"), hoy=hoy, max_edad_dias=max_edad_dias)
     fuente.recargar()
     return fuente

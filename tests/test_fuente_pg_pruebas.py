@@ -21,6 +21,7 @@ class ConexionFalsa:
     def __init__(self, tablas=67, conteos=None):
         self.ejecutadas, self.cerrada, self.rollbacks = [], False, 0
         self.tablas, self.conteos = tablas, dict(ip.TABLAS if conteos is None else conteos)
+        self.sin_columnas, self.tipos, self.sin_version = set(), {}, set()
 
     def cursor(self):
         return _Cursor(self)
@@ -46,6 +47,14 @@ class _Cursor:
         m = re.match(r"SELECT count\(\*\) AS n FROM (\w+)$", sql)
         if m:
             return ["n"], [(self.c.conteos[m.group(1)],)]
+        if "information_schema.columns" in sql:                                      # identidad estructural: columnas y tipos de lo que el Portal lee
+            faltan = self.c.sin_columnas
+            return (["table_name", "column_name", "udt_name"],
+                    [(t, c, self.c.tipos.get((t, c), tp)) for t, cols in ip.ESTRUCTURA_CRITICA.items() for c, tp in cols.items() if (t, c) not in faltan])
+        if sql.startswith('SELECT entidad, "activoId" FROM finanzas_control'):
+            return ["entidad", "activoId"], [(e, None if e in self.c.sin_version else "uuid-x") for e in ip.ENTIDADES_CONTROL]
+        if "FROM vendedores" in sql:
+            return ["codigo", "nombre"], [(7, "Vendedor Siete")]
         if "information_schema.tables" in sql:
             return ["n"], [(self.c.tablas,)]
         if "FROM finanzas_control WHERE entidad IN" in sql:
@@ -54,20 +63,20 @@ class _Cursor:
             return ["entidad", "publicadoEn"], [("clientes", datetime(2026, 10, 27, 18)), ("facturas", datetime(2026, 11, 4, 16)), ("pagos", datetime(2026, 11, 4, 16)),
                                                ("aplicacionesPagos", datetime(2026, 11, 4, 16))]
         if "currentAccountBalance" in sql:                                           # conciliacion: saldo de control
-            return ["cardCode", "saldo", "currency"], [("C1", Decimal("150.00"), "LPS"), ("C2", Decimal("0"), "LPS")]
+            return ["cardCode", "saldo", "currency"], [("C10001", Decimal("150.00"), "LPS"), ("C10002", Decimal("0"), "LPS")]
         if "FROM movimientos_contables" in sql:                                      # conciliacion: libro auxiliar (la linea 2 se creo DESPUES de la foto de clientes)
             return (["cardCode", "transId", "tipo", "fecha", "v", "en_fc"],
-                    [("C1", 1, "ttARInvoice", datetime(2026, 9, 1).date(), Decimal("150.00"), 0), ("C1", 2, "ttReceipt", datetime(2026, 10, 20).date(), Decimal("-100.00"), 0)])
+                    [("C10001", 1, "ttARInvoice", datetime(2026, 9, 1).date(), Decimal("150.00"), 0), ("C10001", 2, "ttReceipt", datetime(2026, 10, 20).date(), Decimal("-100.00"), 0)])
         if "FROM clientes" in sql:
-            return ["cardCode", "vendedor", "ruta"], [("C1", 7, "04"), ("C2", 7, None)]
+            return ["cardCode", "nombre", "vendedor", "ruta"], [("C10001", "CLIENTE UNO SA", 7, "04"), ("C10002", "CLIENTE DOS", 7, None)]
         if "FROM facturas" in sql:
-            f = lambda n, d, tot, pag, st: (n, n, "C1", datetime(2026, 9, d), datetime(2026, 11, d), Decimal(tot), Decimal(pag), st, False)  # noqa: E731
+            f = lambda n, d, tot, pag, st: (n, n, "C10001", datetime(2026, 9, d), datetime(2026, 11, d), Decimal(tot), Decimal(pag), st, False)  # noqa: E731
             return (["docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", "cancelled"],
                     [f(1, 1, "100.00", "100.00", "bost_Close"), f(2, 2, "50.00", "0.00", "bost_Open")])
         if "FROM pagos p" in sql or "FROM pagos_facturas" in sql:
             return ["pagoDocEntry", "facturaDocEntry", "sumApplied", "cancelado", "invoiceType"], [(10, 1, Decimal("100.00"), "N", "it_Invoice")]
         if "FROM pagos" in sql:
-            return (["docEntry", "cardCode", "docDate", "total", "cashSum", "transferSum", "cancelled"], [(10, "C1", datetime(2026, 9, 20), None, Decimal("100.00"), Decimal("0"), False)])
+            return (["docEntry", "cardCode", "docDate", "total", "cashSum", "transferSum", "cancelled"], [(10, "C10001", datetime(2026, 9, 20), None, Decimal("100.00"), Decimal("0"), False)])
         raise AssertionError("SQL inesperado: " + sql[:80])
 
     def fetchall(self):
@@ -118,7 +127,7 @@ def test_carga_completa_solo_select_y_conexion_cerrada():
     assert conn.cerrada and conn.rollbacks >= 1
     assert all(s.lstrip().upper().startswith("SELECT") for s in conn.ejecutadas)
     assert not any(re.search(r"(?i)\b(insert|update|delete|drop|alter|create|grant)\b", s) for s in conn.ejecutadas)
-    assert not any("cardName" in s for s in conn.ejecutadas)                       # nunca se leen nombres
+    assert not any(re.search(r"phone1|cellular|emailAddress", s) for s in conn.ejecutadas)      # nombres autorizados; telefonos y correos, nunca
     assert f.tipo == "EMPRESARIAL_PRUEBAS" and not f.en_vivo and not f.apta_para_publicar
     assert f.calidad["estado"] == "OK"
 
@@ -127,9 +136,9 @@ def test_cortes_reales_por_entidad_y_clasificacion_con_el_motor():
     f = _crear(ConexionFalsa())
     assert f.fecha_corte == date(2026, 11, 4)
     assert any("NO simultáneos" in p or "no simult" in p.lower() for p in f.calidad.get("problemas", []))
-    fac = f.facturas_por_cliente(["C1"])["C1"]
+    fac = f.facturas_por_cliente(["C10001"])["C10001"]
     assert len(fac) == 2 and {x.estado_sap for x in fac} == {"C", "O"}
-    assert f.saldo_abierto("C1") == 50.0
+    assert f.saldo_abierto("C10001") == 50.0
 
 
 def test_etiqueta_de_frescura_no_dice_simulada():
@@ -154,3 +163,36 @@ def test_copia_real_de_pruebas_carga_y_nunca_es_publicable():
 def test_tablas_ajenas_agregadas_por_gelsyn_no_rompen_la_identidad():
     conn = ConexionFalsa(tablas=72)                               # 72 el 6/11: se agregaron asistente_*; los conteos financieros no cambian
     assert _crear(conn).calidad["estado"] == "OK"
+
+
+def test_identidad_estructural_columna_ausente_tipo_distinto_o_entidad_sin_version():
+    c = ConexionFalsa(); c.sin_columnas = {("facturas", "paidToDate")}
+    with pytest.raises(fp.FuentePgError, match=r"facturas\.paidToDate"):
+        _crear(c)
+    c = ConexionFalsa(); c.tipos = {("movimientos_contables", "debe"): "float8"}
+    with pytest.raises(fp.FuentePgError, match="se esperaba numeric, hay float8"):
+        _crear(c)
+    c = ConexionFalsa(); c.sin_version = {"movimientos"}
+    with pytest.raises(fp.FuentePgError, match="Sin versión publicada: movimientos"):
+        _crear(c)
+
+
+def test_nombres_y_vendedor_financieros_se_leen_de_las_tablas_autorizadas():
+    f = _crear(ConexionFalsa())
+    assert f.nombre_cliente("C10001") == "CLIENTE UNO SA"
+    fin = f.clientes_financieros()
+    assert fin["C10001"]["vendedor_nombre"] == "Vendedor Siete" and fin["C10001"]["zona"] == "04" and fin["C10002"]["zona"] is None
+
+
+def test_la_estructura_critica_coincide_con_el_esquema_recibido_de_gelsyn():
+    import re
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "docs" / "gelsyn" / "cosprobell_esquema_completo.sql").read_text(encoding="utf-8")
+    tipo = {"integer": "int4", "bigint": "int8", "text": "text", "boolean": "bool", "uuid": "uuid", "date": "date", "numeric": "numeric", "jsonb": "jsonb"}
+    for t, cols in ip.ESTRUCTURA_CRITICA.items():
+        cuerpo = re.search(r"CREATE TABLE public\.%s \((.*?)\n\);" % t, sql, re.S).group(1)
+        for c, tp in cols.items():
+            m = re.search(r'^\s*"?%s"?\s+([a-z]+)' % c, cuerpo, re.M)
+            assert m, f"{t}.{c} no está en el esquema de Gelsyn"
+            esperado = "timestamp" if m.group(1) == "timestamp" else tipo.get(m.group(1), m.group(1))
+            assert esperado == tp, f"{t}.{c}: esquema {esperado}, constante {tp}"

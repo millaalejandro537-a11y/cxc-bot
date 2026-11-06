@@ -137,3 +137,5 @@ Detalle y cifras: `docs/MIGRACION-OCCIDENTE-119.md` §4–§6.
 - 2026-11-06 Issue #5: saldos control vs libro: 133 diferencias (neto -186,708.00) explicadas por desfase de cortes; con corte por transId<85024 coinciden 1169/1169 (106 de 180 asientos posteriores son retrofechados). finanzas_control sin publicaciones nuevas hoy. Quedan 56 clientes libro!=facturas (saldos a favor) para SAP B1. Ver docs/INVESTIGACION-SALDOS-CONTROL-VS-LIBRO.md.
 
 - 2026-11-06 Issue #5: endpoints de fuente financiera sobre la API existente: GET /api/fuente (+detalle), POST /api/fuente/recargar, GET /api/fuente/conciliacion; lectura PG solo lectura separada de SQLite; esquema de Gelsyn copiado a docs/gelsyn/. BD de pruebas ahora 72 tablas (asistente_* ajenas, no consultadas). Ver docs/ENDPOINTS-FUENTE-FINANCIERA.md.
+
+- 2026-11-06 Issue #5 (2): nombres de cliente/vendedor desde tablas autorizadas (permisos de ruta), GET /api/fuente/discrepancias (informativo, no modifica rutas), identidad estructural (columnas+tipos+versiones), y finanzas_actualizaciones ausente por 2 migraciones pendientes (BD 30 vs SQL 32). Ver docs/ENDPOINTS-FUENTE-FINANCIERA.md.

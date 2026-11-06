@@ -134,6 +134,19 @@ class PortalServicio:
         res["nota"] = "Solo lectura. Un desfase de cortes explicado NO equivale a validación contable: requiere SAP B1."
         return res
 
+    def discrepancias_fuente(self, actor: dict, ip: str = "") -> dict:
+        """Compara zona/vendedor financieros con las rutas operativas. NO modifica nada."""
+        from .discrepancias_fuente import comparar
+        f = self.fuente
+        if f is None or not hasattr(f, "clientes_financieros"):
+            raise ErrorNegocio("La fuente actual no ofrece zona/vendedor financieros.", 409)
+        rutas = [{"route_id": r.route_id, "vendedor": r.vendedor, "clientes": [{"codigo": c.codigo, "zona": c.zona, "nombre": c.nombre} for c in r.clientes]}
+                 for r in self.rutas().values()]
+        res = comparar(rutas, f.clientes_financieros())
+        with self.estado.tx() as c:
+            self.estado.auditar(c, actor, "fuente.discrepancias", "fuente", f.tipo, {"rutas_con_discrepancia": res["rutas_con_discrepancia"]}, ip)
+        return res
+
     def capacidades(self) -> dict:
         """Que se puede usar hoy y que queda bloqueado hasta tener datos vigentes y autorización."""
         vivo = bool(self.fuente and self.fuente.en_vivo)

@@ -249,6 +249,11 @@ def fuente_recargar(ctx: Contexto, p: Peticion):
     return Respuesta(datos=ctx.servicio.recargar_fuente(p.usuario, p.ip))
 
 
+@endpoint("GET", "/api/fuente/discrepancias", roles=LECTURA_GLOBAL)
+def fuente_discrepancias(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.servicio.discrepancias_fuente(p.usuario, p.ip))
+
+
 @endpoint("GET", "/api/fuente/conciliacion", roles=LECTURA_GLOBAL)
 def fuente_conciliacion(ctx: Contexto, p: Peticion):
     return Respuesta(datos=ctx.servicio.conciliacion_fuente(p.usuario, p.ip))

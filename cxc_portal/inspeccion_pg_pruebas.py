@@ -28,6 +28,34 @@ TABLAS_MINIMAS = 60          # Gelsyn agrega tablas ajenas al Portal (p. ej. `as
 
 def tablas_compatibles(n: int) -> bool:
     return n >= TABLAS_MINIMAS
+
+
+ESTRUCTURA_CRITICA: Dict[str, Dict[str, str]] = {   # tabla -> {columna: tipo (udt_name)} de lo que el Portal LEE; verificada contra la base viva y contra docs/gelsyn/*.sql
+    "clientes": {"cardCode": "text", "cardName": "text", "salesPersonCode": "int4", "currency": "text", "currentAccountBalance": "numeric", "uZona": "text", "finVersion": "uuid", "frozen": "bool", "valid": "bool", "finActivo": "text"},
+    "facturas": {"docEntry": "int4", "docNum": "int4", "cardCode": "text", "docDate": "timestamp", "docDueDate": "timestamp", "docTotal": "numeric", "paidToDate": "numeric", "documentStatus": "text", "cancelled": "bool", "finVersion": "uuid", "transId": "int4"},
+    "pagos": {"docEntry": "int4", "cardCode": "text", "docDate": "timestamp", "total": "numeric", "cashSum": "numeric", "transferSum": "numeric", "cancelled": "bool", "finVersion": "uuid", "transId": "int4"},
+    "pagos_facturas": {"pagoDocEntry": "int4", "facturaDocEntry": "int4", "sumApplied": "numeric", "cancelado": "text", "invoiceType": "text", "finVersion": "uuid"},
+    "notas_credito": {"docEntry": "int4", "cardCode": "text", "docDate": "timestamp", "docTotal": "numeric", "paidToDate": "numeric", "cancelled": "bool", "facturaBaseEntry": "int4", "finVersion": "uuid"},
+    "movimientos_contables": {"cardCode": "text", "transId": "int4", "tipo": "text", "fecha": "date", "debe": "numeric", "haber": "numeric", "monedaFC": "text", "finVersion": "uuid"},
+    "finanzas_control": {"entidad": "text", "activoId": "uuid", "publicadoEn": "timestamp", "finalizadoEn": "timestamp", "iniciadoEn": "timestamp", "secuencia": "int4", "cantidad": "int4"},
+    "vendedores": {"salesEmployeeCode": "int4", "salesEmployeeName": "text", "active": "bool", "finVersion": "uuid"},
+}
+ENTIDADES_CONTROL = ("clientes", "facturas", "pagos", "aplicacionesPagos", "movimientos", "notasCredito", "vendedores")     # cada una necesita una version publicada (activoId)
+
+
+def verificar_estructura(sesion: "Sesion") -> None:
+    """Identidad ESTRUCTURAL: las columnas (y su tipo) que el Portal lee existen tal cual, y `finanzas_control` publica una version de cada entidad. Solo nombres en los mensajes."""
+    tablas = ", ".join(f"'{t}'" for t in ESTRUCTURA_CRITICA)
+    vivas: Dict[str, Dict[str, str]] = {}
+    for r in sesion.consulta(f"SELECT table_name, column_name, udt_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ({tablas})"):
+        vivas.setdefault(r["table_name"], {})[r["column_name"]] = r["udt_name"]
+    faltan = [f"{t}.{c}" for t, cols in ESTRUCTURA_CRITICA.items() for c in cols if c not in vivas.get(t, {})]
+    tipo = [f"{t}.{c}: se esperaba {tp}, hay {vivas[t][c]}" for t, cols in ESTRUCTURA_CRITICA.items() for c, tp in cols.items() if c in vivas.get(t, {}) and vivas[t][c] != tp]
+    ctrl = {r["entidad"]: r["activoId"] for r in sesion.consulta("SELECT entidad, \"activoId\" FROM finanzas_control")}
+    sin_version = [e for e in ENTIDADES_CONTROL if not ctrl.get(e)]
+    if faltan or tipo or sin_version:
+        raise InspeccionError("Estructura financiera distinta de la esperada. " + (f"Columnas ausentes: {', '.join(faltan[:8])}. " if faltan else "")
+                              + (f"Tipos distintos: {'; '.join(tipo[:5])}. " if tipo else "") + (f"Sin versión publicada: {', '.join(sin_version)}." if sin_version else ""))
 # Tablas financieras y filas documentadas por Gelsyn (copia del respaldo del 4/11/2026).
 TABLAS: Dict[str, int] = {
     "empresa_financiera": 1, "clientes": 1170, "vendedores": 36, "condiciones_pago": 3, "facturas": 17280, "facturas_lineas": 85979, "facturas_cuotas": 17245,
@@ -66,6 +94,10 @@ def validar_sql(sql: str) -> str:
         raise InspeccionError("Sentencia con palabras de escritura/DDL no permitidas.")
     for t in re.findall(r'(?i)\b(?:from|join)\s+"?([A-Za-z_][A-Za-z0-9_.]*)"?', s):
         if t.lower() in VISTAS_CATALOGO:      # unicas vistas de catalogo admitidas (sin pg_catalog: ahi viven roles y hashes)
+            continue
+        if t == "_prisma_migrations":      # metadatos de migraciones del backend (nombres y fechas); jamas la columna `logs`
+            if re.search(r"(?i)\blogs\b|\*", s):
+                raise InspeccionError("De _prisma_migrations solo se leen nombre, fechas y pasos (sin logs).")
             continue
         if t.startswith("cxc.") and t[4:] in CXC_CONTABLES:      # solo para count(*) (ver E_CXC)
             continue
