@@ -133,3 +133,5 @@ Detalle y cifras: `docs/MIGRACION-OCCIDENTE-119.md` §4–§6.
 - 2026-11-05 Issue #5: fuente `gelsyn-pg-pruebas` (cxc_portal/fuente_pg_pruebas.py) lee Cosprobell-pruebas por PostgreSQL READ ONLY y sirve el Portal real en estado aislado; 174/174 clases coinciden con la lectura directa; nunca publicable. Rol `postgres` es superusuario: no usar en produccion; ver docs/INTEGRACION-GELSYN-PG-PRUEBAS.md.
 
 - 2026-11-05 Issue #5: esquema Gelsyn (26 cxc + 67 public) comparado con Estado SQLite: 229/229 columnas identicas; cxc casi vacio (1 ruta ZONA_04 de prueba de Gelsyn); el repo no tiene persistencia PG (la variante de Gelsyn no esta en nuestro poder). Sin conciliaciones/partidas; movimientos_contables cuadra 1025/1158 con saldo de control. Ver docs/ANALISIS-ESQUEMA-GELSYN-CXC.md.
+
+- 2026-11-06 Issue #5: saldos control vs libro: 133 diferencias (neto -186,708.00) explicadas por desfase de cortes; con corte por transId<85024 coinciden 1169/1169 (106 de 180 asientos posteriores son retrofechados). finanzas_control sin publicaciones nuevas hoy. Quedan 56 clientes libro!=facturas (saldos a favor) para SAP B1. Ver docs/INVESTIGACION-SALDOS-CONTROL-VS-LIBRO.md.
