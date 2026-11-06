@@ -87,6 +87,7 @@ class PortalServicio:
         self._cache: Optional[Dict[str, Ruta]] = None
         self._version = None
         self._lock = threading.RLock()
+        self._lock_recarga = threading.Lock()
 
     # ------------------------------------------------------------------ fuente
     def info_fuente(self) -> dict:
@@ -95,6 +96,43 @@ class PortalServicio:
                     "frescura": {"vigente": False, "motivo": "No hay snapshot ni fuente en vivo configurados."}}
         return {"tipo": self.fuente.tipo, "en_vivo": self.fuente.en_vivo, "etiqueta": self.fuente.etiqueta,
                 "fecha_corte": self.fuente.fecha_corte.isoformat(), "frescura": self.fuente.frescura()}
+
+    def detalle_fuente(self) -> Optional[dict]:
+        """Detalle de calidad/cortes de la fuente (solo las que lo ofrecen, p. ej. la copia PG de pruebas)."""
+        f = self.fuente
+        return f.detalle() if f is not None and hasattr(f, "detalle") else None
+
+    def recargar_fuente(self, actor: dict, ip: str = "") -> dict:
+        """Vuelve a leer la fuente (SOLO LECTURA). Una recarga fallida conserva la ultima carga buena. Queda auditada. Los caches se invalidan por `version_datos`."""
+        f = self.fuente
+        if f is None or not hasattr(f, "recargar") or not hasattr(f, "detalle"):
+            raise ErrorNegocio("La fuente actual no admite recarga.", 409)
+        if not self._lock_recarga.acquire(blocking=False):
+            raise ErrorNegocio("Ya hay una recarga en curso.", 409)
+        try:
+            antes = getattr(f, "version_datos", 0)
+            calidad = f.recargar()
+            reemplazo = getattr(f, "version_datos", 0) != antes
+        finally:
+            self._lock_recarga.release()
+        with self.estado.tx() as c:
+            self.estado.auditar(c, actor, "fuente.recargar", "fuente", f.tipo, {"estado": calidad.get("estado"), "reemplazo": reemplazo, "fecha_corte": f.fecha_corte.isoformat()}, ip)
+        return {"estado": calidad.get("estado"), "datos_reemplazados": reemplazo, "fuente": self.info_fuente(), "detalle": self.detalle_fuente()}
+
+    def conciliacion_fuente(self, actor: dict, ip: str = "") -> dict:
+        f = self.fuente
+        if f is None or not hasattr(f, "conciliacion"):
+            raise ErrorNegocio("La fuente actual no ofrece conciliación de saldos de control contra el libro.", 409)
+        try:
+            res = f.conciliacion()
+        except Exception as e:  # noqa: BLE001 - sin detalle interno ni secretos
+            raise ErrorNegocio(f"No se pudo leer la conciliación de la fuente ({type(e).__name__}).", 503) from None
+        with self.estado.tx() as c:
+            self.estado.auditar(c, actor, "fuente.conciliacion", "fuente", f.tipo, {"difieren_sin_corte": res["sin_corte"]["difieren"],
+                                                                                     "difieren_con_corte": res["corte_por_transid"]["minimas_diferencias"]}, ip)
+        res["validado_contablemente"] = False
+        res["nota"] = "Solo lectura. Un desfase de cortes explicado NO equivale a validación contable: requiere SAP B1."
+        return res
 
     def capacidades(self) -> dict:
         """Que se puede usar hoy y que queda bloqueado hasta tener datos vigentes y autorización."""

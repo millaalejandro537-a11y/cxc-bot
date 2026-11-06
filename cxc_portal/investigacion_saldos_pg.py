@@ -79,6 +79,18 @@ def analizar(clientes: Sequence[dict], lineas: Sequence[dict], corte_clientes: O
     return out
 
 
+def diferencias(clientes: Sequence[dict], lineas: Sequence[dict], transid_limite: Optional[int] = None, maximo: int = 500) -> List[dict]:
+    """Clientes cuyo saldo de control difiere del libro (opcionalmente solo con lineas de transId < limite). Solo codigos e importes; para revision de gerencia/admin."""
+    ctrl = {c["cardCode"]: _dec(c["saldo"]) for c in clientes}
+    S: Dict[str, Decimal] = defaultdict(Decimal)
+    for r in lineas:
+        if transid_limite is None or r["transId"] < transid_limite:
+            S[r["cardCode"]] += _dec(r["v"])
+    out = [{"codigo": k, "control": str(c), "libro": str(S.get(k, Decimal(0))), "diferencia": str(S.get(k, Decimal(0)) - c)}
+           for k, c in sorted(ctrl.items()) if abs(S.get(k, Decimal(0)) - c) > TOL]
+    return out[:maximo]
+
+
 def investigar(ses: "ip.Sesion") -> dict:
     cortes = [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r.items()} for r in ses.consulta(SQL_CORTES)]
     corte_cli = next((r["finalizadoEn"] for r in ses.consulta(SQL_CORTES) if r["entidad"] == "clientes"), None)
@@ -104,7 +116,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         ses = ip.Sesion(conn)
         n = ses.consulta(ip.E_CONSULTAS[1][1])[0]["n"]
-        if n != ip.TABLAS_TOTALES:
+        if not ip.tablas_compatibles(n):
             print("Identidad no confirmada: se detiene.", file=sys.stderr)
             return 1
         print(json.dumps(investigar(ses), ensure_ascii=False, indent=1, default=str))

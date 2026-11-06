@@ -240,7 +240,18 @@ def fuente(ctx: Contexto, p: Peticion):
     if p.usuario["rol"] in LECTURA_GLOBAL:
         from .reporting_bridge import estado_reporting_core
         d["reporting_core"] = estado_reporting_core()
+        d["detalle"] = ctx.servicio.detalle_fuente()          # cortes por entidad, exclusiones, motivo de no publicable (solo gerencia/admin)
     return Respuesta(datos=d)
+
+
+@endpoint("POST", "/api/fuente/recargar", roles=LECTURA_GLOBAL)
+def fuente_recargar(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.servicio.recargar_fuente(p.usuario, p.ip))
+
+
+@endpoint("GET", "/api/fuente/conciliacion", roles=LECTURA_GLOBAL)
+def fuente_conciliacion(ctx: Contexto, p: Peticion):
+    return Respuesta(datos=ctx.servicio.conciliacion_fuente(p.usuario, p.ip))
 
 
 @endpoint("GET", "/api/reglas")

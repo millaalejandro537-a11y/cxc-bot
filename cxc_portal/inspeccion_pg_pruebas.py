@@ -23,6 +23,11 @@ ENV_URL = "CXC_PG_PRUEBAS_URL"
 ENV_URL_FILE = "CXC_PG_PRUEBAS_URL_FILE"
 SERVICIO_ESPERADO = "Cosprobell-pruebas"
 TABLAS_TOTALES = 67
+TABLAS_MINIMAS = 60          # Gelsyn agrega tablas ajenas al Portal (p. ej. `asistente_*`, 72 el 6/11): la identidad la prueban los CONTEOS EXACTOS de las 15 financieras; el total solo descarta bases muy distintas
+
+
+def tablas_compatibles(n: int) -> bool:
+    return n >= TABLAS_MINIMAS
 # Tablas financieras y filas documentadas por Gelsyn (copia del respaldo del 4/11/2026).
 TABLAS: Dict[str, int] = {
     "empresa_financiera": 1, "clientes": 1170, "vendedores": 36, "condiciones_pago": 3, "facturas": 17280, "facturas_lineas": 85979, "facturas_cuotas": 17245,
@@ -231,7 +236,7 @@ def inspeccionar(sesion: Sesion, destino: dict, atestacion: str) -> dict:
         conteos[t] = sesion.consulta(f'SELECT count(*) AS n FROM {t}')[0]["n"]
     out["identidad"] = {"tablas_publicas": n, "tablas_esperadas": TABLAS_TOTALES, "conteos": conteos,
                         "coinciden": {t: conteos[t] == e for t, e in TABLAS.items()}}
-    if n != TABLAS_TOTALES or not all(out["identidad"]["coinciden"].values()):
+    if not tablas_compatibles(n) or not all(out["identidad"]["coinciden"].values()):
         out["veredicto"] = "IDENTIDAD_NO_CONFIRMADA"
         out["problemas"].append("El número de tablas o los conteos financieros no coinciden con la copia documentada del 4/11/2026: se detiene sin leer más.")
         return out

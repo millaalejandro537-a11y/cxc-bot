@@ -132,7 +132,7 @@ def test_identidad_no_confirmada_detiene_sin_leer_mas():
     r = ip.inspeccionar(ip.Sesion(fc), {"host": "h"}, "Cosprobell-pruebas")
     assert r["veredicto"] == "IDENTIDAD_NO_CONFIRMADA" and r["identidad"]["coinciden"]["facturas"] is False and r["resultados"] == {}
     assert not any("finanzas_control" in s and "activoId" in s for s in fc.sqls)                  # no se leyo nada mas que identidad y conteos
-    r2 = ip.inspeccionar(ip.Sesion(FakeConn(tablas=66)), {"host": "h"}, "Cosprobell-pruebas")
+    r2 = ip.inspeccionar(ip.Sesion(FakeConn(tablas=40)), {"host": "h"}, "Cosprobell-pruebas")
     assert r2["veredicto"] == "IDENTIDAD_NO_CONFIRMADA"
 
 

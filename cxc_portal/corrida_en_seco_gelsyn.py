@@ -145,7 +145,9 @@ def payloads_transporte(datos: dict, corte_iso: str = "2026-11-04T19:00:00Z") ->
     yn = lambda b: "Y" if b else "N"  # noqa: E731
     pagos = {p["docEntry"]: p for p in datos["pagos"]}
     datos_t = {
-        "clientes": [{"cardCode": c, "nombre": "SIN NOMBRE (no se lee)", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": None, "vendedor": 0, "zona": None, "ruta": None} for c in sorted(datos["clientes"])],
+        "clientes": [{"cardCode": c, "nombre": "SIN NOMBRE (no se lee)", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": None,
+                      "vendedor": (datos.get("clientes_info", {}).get(c) or {}).get("vendedor", 0), "zona": None, "ruta": (datos.get("clientes_info", {}).get(c) or {}).get("ruta")}
+                     for c in sorted(datos["clientes"])],
         "facturas": [{"docEntry": f["docEntry"], "docNum": f["docNum"], "cardCode": f["cardCode"], "fecha": _d(f["docDate"]).isoformat(), "vencimiento": _d(f["docDueDate"]).isoformat() if f["docDueDate"] else None,
                       "moneda": "LPS", "total": _txt(f["docTotal"]), "pagado": _txt(f["paidToDate"]), "estado": f["documentStatus"], "cancelado": yn(f["cancelled"])} for f in datos["facturas"]],
         "pagos": [{"docEntry": p["docEntry"], "docNum": p["docEntry"], "cardCode": p["cardCode"], "fecha": _d(p["docDate"]).isoformat(), "moneda": "LPS", "cancelado": yn(p["cancelled"]),
@@ -263,7 +265,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ident = ses.consulta(ip.E_CONSULTAS[0][1])[0]
         n = ses.consulta(ip.E_CONSULTAS[1][1])[0]["n"]
         conteos = {t: ses.consulta(f"SELECT count(*) AS n FROM {t}")[0]["n"] for t in ("facturas", "pagos", "pagos_facturas", "clientes")}
-        if n != ip.TABLAS_TOTALES or any(conteos[t] != ip.TABLAS[t] for t in conteos):
+        if not ip.tablas_compatibles(n) or any(conteos[t] != ip.TABLAS[t] for t in conteos):
             print("Identidad no confirmada: se detiene.", file=sys.stderr)
             return 1
         datos = leer_datos(ses, [c for d in aprob.values() for c in d])

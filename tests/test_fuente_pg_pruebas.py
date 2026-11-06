@@ -49,10 +49,17 @@ class _Cursor:
         if "information_schema.tables" in sql:
             return ["n"], [(self.c.tablas,)]
         if "FROM finanzas_control WHERE entidad IN" in sql:
+            if "movimientos" in sql:
+                return ["entidad", "iniciadoEn", "finalizadoEn", "publicadoEn", "secuencia", "cantidad"], [("clientes", datetime(2026, 10, 27, 17), datetime(2026, 10, 27, 18), datetime(2026, 10, 27, 18), 1, 2)]
             return ["entidad", "publicadoEn"], [("clientes", datetime(2026, 10, 27, 18)), ("facturas", datetime(2026, 11, 4, 16)), ("pagos", datetime(2026, 11, 4, 16)),
                                                ("aplicacionesPagos", datetime(2026, 11, 4, 16))]
-        if sql.startswith('SELECT "cardCode" FROM clientes'):
-            return ["cardCode"], [("C1",), ("C2",)]
+        if "currentAccountBalance" in sql:                                           # conciliacion: saldo de control
+            return ["cardCode", "saldo", "currency"], [("C1", Decimal("150.00"), "LPS"), ("C2", Decimal("0"), "LPS")]
+        if "FROM movimientos_contables" in sql:                                      # conciliacion: libro auxiliar (la linea 2 se creo DESPUES de la foto de clientes)
+            return (["cardCode", "transId", "tipo", "fecha", "v", "en_fc"],
+                    [("C1", 1, "ttARInvoice", datetime(2026, 9, 1).date(), Decimal("150.00"), 0), ("C1", 2, "ttReceipt", datetime(2026, 10, 20).date(), Decimal("-100.00"), 0)])
+        if "FROM clientes" in sql:
+            return ["cardCode", "vendedor", "ruta"], [("C1", 7, "04"), ("C2", 7, None)]
         if "FROM facturas" in sql:
             f = lambda n, d, tot, pag, st: (n, n, "C1", datetime(2026, 9, d), datetime(2026, 11, d), Decimal(tot), Decimal(pag), st, False)  # noqa: E731
             return (["docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", "cancelled"],
@@ -91,7 +98,7 @@ def test_sin_atestacion_no_se_conecta():
 
 
 def test_identidad_distinta_se_detiene_sin_leer_mas():
-    conn = ConexionFalsa(tablas=66)
+    conn = ConexionFalsa(tablas=40)
     with pytest.raises(fp.FuentePgError, match="Identidad no confirmada"):
         _crear(conn)
     assert conn.cerrada and not any("FROM facturas" in s and "docTotal" in s for s in conn.ejecutadas)
@@ -142,3 +149,8 @@ def test_copia_real_de_pruebas_carga_y_nunca_es_publicable():
     f = fp.crear_fuente_pg_pruebas(max_edad_dias=60)
     assert f.calidad["estado"] == "OK" and not f.apta_para_publicar and f.tipo == "EMPRESARIAL_PRUEBAS"
     assert len(f.registros_sap()) > 1000
+
+
+def test_tablas_ajenas_agregadas_por_gelsyn_no_rompen_la_identidad():
+    conn = ConexionFalsa(tablas=72)                               # 72 el 6/11: se agregaron asistente_*; los conteos financieros no cambian
+    assert _crear(conn).calidad["estado"] == "OK"
