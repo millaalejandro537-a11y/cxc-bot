@@ -123,6 +123,9 @@ def crear_fuente(data_dir: Optional[Path], modo: str = "snapshot") -> Optional[F
     if modo == "gelsyn-pg-pruebas":      # copia de PRUEBAS de Gelsyn leída de PostgreSQL en solo lectura; nunca apta para publicar (ver fuente_pg_pruebas)
         from .fuente_pg_pruebas import crear_fuente_pg_pruebas
         return crear_fuente_pg_pruebas()
+    if modo == "gelsyn-pg-produccion":   # PRODUCCION en solo lectura (cuenta admin con barreras de permisos_pg); nunca publicable hasta validar en SAP B1
+        from .fuente_pg_pruebas import crear_fuente_pg_produccion
+        return crear_fuente_pg_produccion()
     if modo == "viva":
         raise FuenteNoConfigurada("CXC_FUENTE=viva: la fuente en vivo todavía no está disponible. Ver docs/INTEGRACION-SAP-VIVO.md.")
     if data_dir and (Path(data_dir) / "02_SAP_08Oct2026").is_dir():

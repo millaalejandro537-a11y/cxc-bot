@@ -20,6 +20,9 @@ from . import gelsyn_config as gc
 from . import inspeccion_pg_pruebas as ip
 from . import transporte_gelsyn as tg
 
+ENV_URL_FILE_PROD = "CXC_PG_PRODUCCION_URL_FILE"            # archivo 0600 con la URL de PRODUCCION (nunca se imprime)
+ATESTACION_PRODUCCION = "PRODUCCION-SOLO-LECTURA"          # quien la define acepta leer produccion SOLO en lectura y con publicacion bloqueada
+ENTORNO_PRUEBAS, ENTORNO_PRODUCCION = "pruebas", "produccion-no-validada"
 ENV_ATESTACION = "CXC_GELSYN_PG_ATESTACION"      # debe valer "Cosprobell-pruebas": quien la define afirma que la URL es de ESE servicio
 MODO_FUENTE = "gelsyn-pg-pruebas"
 
@@ -37,8 +40,16 @@ class FuentePgError(RuntimeError):
     """Mensajes sin secretos."""
 
 
-def verificar_identidad(ses: "ip.Sesion") -> None:
+def verificar_identidad(ses: "ip.Sesion", produccion: bool = False) -> None:
     n = ses.consulta(ip.E_CONSULTAS[1][1])[0]["n"]
+    if produccion:         # produccion no tiene los conteos de la copia: la identidad es ESTRUCTURAL (columnas, tipos y versiones publicadas)
+        if not ip.tablas_compatibles(n):
+            raise FuentePgError("Identidad no confirmada: la base no parece el backend de Cosprobell. No se lee nada más.")
+        try:
+            ip.verificar_estructura(ses)
+        except ip.InspeccionError as e:
+            raise FuentePgError(f"Identidad no confirmada: {e}") from None
+        return
     conteos = {t: ses.consulta(f"SELECT count(*) AS n FROM {t}")[0]["n"] for t in ("facturas", "pagos", "pagos_facturas", "clientes")}
     if not ip.tablas_compatibles(n) or any(conteos[t] != ip.TABLAS[t] for t in conteos):
         raise FuentePgError("Identidad no confirmada: la base no coincide con la copia documentada de Cosprobell-pruebas. No se lee nada más.")
@@ -69,26 +80,53 @@ def _servidor(datos: dict, cortes: Dict[str, Any]) -> "ces.ServidorFinanzasFalso
     return ces.ServidorFinanzasFalso(datos_t, metas)
 
 
+class _SesionProduccion(ip.Sesion):
+    """Sesion de PRODUCCION: cada sentencia pasa ademas por `permisos_pg.clasificar` y solo se admite LECTURA (la escritura en `cxc` aun no se usa)."""
+
+    def consulta(self, sql, params=None):
+        from . import permisos_pg as pp
+        if pp.clasificar(sql)[0] != "lectura":
+            raise pp.PermisoDenegado("Producción: solo lectura.")
+        return super().consulta(sql, params)
+
+
 class LectorPg:
     """Lectura SOLO LECTURA de la base de pruebas, separada de la persistencia operativa SQLite. Cada lectura abre su conexion y la cierra."""
 
-    def __init__(self, env: Optional[Dict[str, str]] = None, conectar: Callable[[str], Any] = ip._conectar):
+    def __init__(self, env: Optional[Dict[str, str]] = None, conectar: Callable[[str], Any] = ip._conectar, produccion: bool = False):
         self.env = os.environ if env is None else env
-        self.conectar = conectar
-        if self.env.get(ENV_ATESTACION) != ip.SERVICIO_ESPERADO:
-            raise FuentePgError(f"No se conecta: defina {ENV_ATESTACION}={ip.SERVICIO_ESPERADO} (afirma que la URL pertenece a ese servicio de PRUEBAS).")
+        self.conectar, self.produccion = conectar, produccion
+        if produccion:
+            if self.env.get(ENV_ATESTACION) != ATESTACION_PRODUCCION:
+                raise FuentePgError(f"No se conecta a PRODUCCIÓN: defina {ENV_ATESTACION}={ATESTACION_PRODUCCION} (solo lectura, publicación bloqueada).")
+            if not self.env.get(ENV_URL_FILE_PROD):
+                raise FuentePgError(f"Defina {ENV_URL_FILE_PROD} (archivo privado con la URL de producción).")
+            self._env_url = {ip.ENV_URL_FILE: self.env[ENV_URL_FILE_PROD]}
+        else:
+            if self.env.get(ENV_ATESTACION) != ip.SERVICIO_ESPERADO:
+                raise FuentePgError(f"No se conecta: defina {ENV_ATESTACION}={ip.SERVICIO_ESPERADO} (afirma que la URL pertenece a ese servicio de PRUEBAS).")
+            self._env_url = self.env
 
     def _sesion(self):
         try:
-            conn = self.conectar(ip.leer_url(self.env))
+            conn = self.conectar(ip.leer_url(self._env_url))
         except Exception as e:  # noqa: BLE001 - jamas incluye la URL
-            raise FuentePgError(f"No se pudo conectar a la base de pruebas ({type(e).__name__}).") from None
-        return conn, ip.Sesion(conn)
+            raise FuentePgError(f"No se pudo conectar a la base ({type(e).__name__}).") from None
+        ses = _SesionProduccion(conn) if self.produccion else ip.Sesion(conn)
+        if self.produccion:        # barrera extra: la sesion DEBE ser de solo lectura aunque la cuenta pueda escribir
+            try:
+                solo_lectura = ses.consulta("SELECT current_setting('transaction_read_only') AS r")[0]["r"] == "on"
+            except Exception:  # noqa: BLE001
+                solo_lectura = False
+            if not solo_lectura:
+                conn.close()
+                raise FuentePgError("La sesión de producción no es de solo lectura: se rechaza.")
+        return conn, ses
 
     def _con(self, fn):
         conn, ses = self._sesion()
         try:
-            verificar_identidad(ses)
+            verificar_identidad(ses, self.produccion)
             return fn(ses)
         except FuentePgError:
             raise
@@ -120,9 +158,10 @@ class FuentePgPruebas(fe.FuenteEmpresarial):
     """`FuenteEmpresarial` sobre la copia PG de pruebas, recargable sin reiniciar. Una recarga fallida conserva la ultima carga buena (DEGRADADA)."""
 
     def __init__(self, lector: LectorPg, servidor: "ces.ServidorFinanzasFalso", vendedores: Optional[Dict[Any, str]] = None, **kw):
+        entorno = ENTORNO_PRODUCCION if lector.produccion else ENTORNO_PRUEBAS
         cfg = gc.cargar_config({gc.ENV_BASE_URL: "https://pg-pruebas-local.invalid", gc.ENV_API_KEY: "sin-llave-lectura-local-0123456789", gc.ENV_ENTORNO: "pruebas"})
         cliente = gc.cliente_solo_lectura(cfg, transport=servidor, sleep=lambda s: None)
-        super().__init__(tg.TransporteGelsyn(cliente, entorno="pruebas"), **kw)
+        super().__init__(tg.TransporteGelsyn(cliente, entorno=entorno), **kw)
         self.lector, self.servidor = lector, servidor
         self.lecturas_pg = 1
         self.vendedores_nombres: Dict[Any, str] = dict(vendedores or {})
@@ -149,7 +188,7 @@ class FuentePgPruebas(fe.FuenteEmpresarial):
 
     def detalle(self) -> Dict[str, Any]:
         t = self.transporte
-        return {"lectura": "PostgreSQL de pruebas, solo lectura (la conexión se abre al arrancar y al recargar; luego se cierra)", "cortes_por_entidad": dict(t.cortes),
+        return {"lectura": ("PostgreSQL de PRODUCCIÓN, solo lectura" if self.lector.produccion else "PostgreSQL de pruebas, solo lectura") + " (la conexión se abre al arrancar y al recargar; luego se cierra)", "cortes_por_entidad": dict(t.cortes),
                 "excluidos": dict(t.excluidos), "advertencias": list(t.advertencias), "apta_para_publicar": self.apta_para_publicar, "motivo_no_apta": tg.MOTIVO_NO_APTO,
                 "lecturas_pg": self.lecturas_pg, "ultima_lectura_pg": self.ultima_lectura_pg, "calidad": self.calidad.get("estado"),
                 "problemas": list(self.calidad.get("problemas", []))[:10]}
@@ -167,9 +206,15 @@ class FuentePgPruebas(fe.FuenteEmpresarial):
         return out
 
 
+def crear_fuente_pg_produccion(env: Optional[Dict[str, str]] = None, conectar: Callable[[str], Any] = ip._conectar, hoy: Callable[[], date] = date.today,
+                               max_edad_dias: int = 5) -> "FuentePgPruebas":
+    """PRODUCCION en SOLO LECTURA (cuenta administrativa por decision de Alejandro; barreras en `permisos_pg`). Nunca apta para publicar hasta validacion contable en SAP B1."""
+    return crear_fuente_pg_pruebas(env, conectar, hoy, max_edad_dias, produccion=True)
+
+
 def crear_fuente_pg_pruebas(env: Optional[Dict[str, str]] = None, conectar: Callable[[str], Any] = ip._conectar, hoy: Callable[[], date] = date.today,
-                            max_edad_dias: int = 5) -> "FuentePgPruebas":
-    lector = LectorPg(env, conectar)
+                            max_edad_dias: int = 5, produccion: bool = False) -> "FuentePgPruebas":
+    lector = LectorPg(env, conectar, produccion)
     datos, cortes = lector.leer()
     fuente = FuentePgPruebas(lector, _servidor(datos, cortes), vendedores=datos.get("vendedores"), hoy=hoy, max_edad_dias=max_edad_dias)
     fuente.recargar()

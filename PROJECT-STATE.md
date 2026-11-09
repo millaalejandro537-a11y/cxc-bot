@@ -139,3 +139,5 @@ Detalle y cifras: `docs/MIGRACION-OCCIDENTE-119.md` §4–§6.
 - 2026-11-06 Issue #5: endpoints de fuente financiera sobre la API existente: GET /api/fuente (+detalle), POST /api/fuente/recargar, GET /api/fuente/conciliacion; lectura PG solo lectura separada de SQLite; esquema de Gelsyn copiado a docs/gelsyn/. BD de pruebas ahora 72 tablas (asistente_* ajenas, no consultadas). Ver docs/ENDPOINTS-FUENTE-FINANCIERA.md.
 
 - 2026-11-06 Issue #5 (2): nombres de cliente/vendedor desde tablas autorizadas (permisos de ruta), GET /api/fuente/discrepancias (informativo, no modifica rutas), identidad estructural (columnas+tipos+versiones), y finanzas_actualizaciones ausente por 2 migraciones pendientes (BD 30 vs SQL 32). Ver docs/ENDPOINTS-FUENTE-FINANCIERA.md.
+
+- 2026-11-09 Issue #5: DECISION de Alejandro: usar la URL de PRODUCCION (cuenta postgres) con limites: escritura solo en las 26 tablas cxc, lectura financiera autorizada, publicacion bloqueada. Implementado modo gelsyn-pg-produccion (solo lectura, permisos_pg.py). En produccion NO existe el esquema cxc; finanzas_actualizaciones si existe. Ver docs/PRODUCCION-SOLO-LECTURA.md.

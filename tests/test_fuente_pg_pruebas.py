@@ -21,7 +21,7 @@ class ConexionFalsa:
     def __init__(self, tablas=67, conteos=None):
         self.ejecutadas, self.cerrada, self.rollbacks = [], False, 0
         self.tablas, self.conteos = tablas, dict(ip.TABLAS if conteos is None else conteos)
-        self.sin_columnas, self.tipos, self.sin_version = set(), {}, set()
+        self.sin_columnas, self.tipos, self.sin_version, self.solo_lectura = set(), {}, set(), True
 
     def cursor(self):
         return _Cursor(self)
@@ -47,6 +47,8 @@ class _Cursor:
         m = re.match(r"SELECT count\(\*\) AS n FROM (\w+)$", sql)
         if m:
             return ["n"], [(self.c.conteos[m.group(1)],)]
+        if "transaction_read_only" in sql:
+            return ["r"], [("on" if self.c.solo_lectura else "off",)]
         if "information_schema.columns" in sql:                                      # identidad estructural: columnas y tipos de lo que el Portal lee
             faltan = self.c.sin_columnas
             return (["table_name", "column_name", "udt_name"],
@@ -196,3 +198,53 @@ def test_la_estructura_critica_coincide_con_el_esquema_recibido_de_gelsyn():
             assert m, f"{t}.{c} no está en el esquema de Gelsyn"
             esperado = "timestamp" if m.group(1) == "timestamp" else tipo.get(m.group(1), m.group(1))
             assert esperado == tp, f"{t}.{c}: esquema {esperado}, constante {tp}"
+
+
+# ----------------------------------------------------------------------------- PRODUCCION (solo lectura)
+def _env_prod(tmp_path):
+    f = tmp_path / "prod.url"
+    f.write_text("postgresql://postgres:CLAVE-FALSA@host.invalid:1/db")
+    f.chmod(0o600)
+    return {fp.ENV_ATESTACION: fp.ATESTACION_PRODUCCION, fp.ENV_URL_FILE_PROD: str(f)}
+
+
+def _prod(conn, env):
+    return fp.crear_fuente_pg_produccion(env, conectar=lambda url: conn, hoy=lambda: date(2026, 11, 5))
+
+
+def test_produccion_exige_atestacion_expresa_y_archivo_de_url(tmp_path):
+    env = _env_prod(tmp_path)
+    for malo in ({**env, fp.ENV_ATESTACION: "Cosprobell-pruebas"}, {fp.ENV_ATESTACION: fp.ATESTACION_PRODUCCION}, {}):
+        with pytest.raises(fp.FuentePgError):
+            fp.crear_fuente_pg_produccion(malo, conectar=lambda u: ConexionFalsa())
+
+
+def test_produccion_es_solo_lectura_no_validada_y_no_publicable(tmp_path):
+    from cxc_portal import permisos_pg as pp
+    conn = ConexionFalsa(conteos={t: 1 for t in ip.TABLAS}, tablas=73)            # produccion: otros conteos y 73 tablas; la identidad es estructural
+    f = _prod(conn, _env_prod(tmp_path))
+    assert f.tipo == "EMPRESARIAL_PRODUCCION_NO_VALIDADA" and f.en_vivo is False and f.apta_para_publicar is False
+    assert "PRODUCCIÓN" in f.etiqueta and f.frescura()["motivo"].startswith("PRODUCCIÓN SIN VALIDAR")
+    assert conn.cerrada and all(pp.clasificar(q)[0] == "lectura" for q in conn.ejecutadas)
+    assert f.detalle()["lectura"].startswith("PostgreSQL de PRODUCCIÓN")
+
+
+def test_produccion_rechaza_una_sesion_que_no_es_de_solo_lectura(tmp_path):
+    conn = ConexionFalsa()
+    conn.solo_lectura = False
+    with pytest.raises(fp.FuentePgError, match="no es de solo lectura"):
+        _prod(conn, _env_prod(tmp_path))
+
+
+def test_produccion_con_estructura_distinta_se_detiene(tmp_path):
+    conn = ConexionFalsa(); conn.sin_columnas = {("facturas", "docTotal")}
+    with pytest.raises(fp.FuentePgError, match=r"facturas\.docTotal"):
+        _prod(conn, _env_prod(tmp_path))
+
+
+def test_produccion_no_filtra_la_url_en_los_errores(tmp_path):
+    def falla(url):
+        raise RuntimeError("fallo " + url)
+    with pytest.raises(fp.FuentePgError) as e:
+        fp.crear_fuente_pg_produccion(_env_prod(tmp_path), conectar=falla)
+    assert "CLAVE-FALSA" not in str(e.value) and "postgresql://" not in str(e.value)

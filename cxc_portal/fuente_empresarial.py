@@ -24,6 +24,7 @@ from .fuentes import TIPO_VIVA
 CONTRATO_VERSION = "1.0"          # version mayor del contrato; un cambio de mayor exige revisar el adaptador
 TIPO_SIMULADA = "EMPRESARIAL_SIMULADA"
 TIPO_PRUEBAS = "EMPRESARIAL_PRUEBAS"
+TIPO_PRODUCCION_NV = "EMPRESARIAL_PRODUCCION_NO_VALIDADA"      # produccion leida en solo lectura, SIN validacion contable: no es dato vivo operable
 TOL = 0.01
 
 REQ_CLIENTE = ("codigo_sap", "nombre")
@@ -84,11 +85,14 @@ class FuenteEmpresarial:
         self.transporte, self._hoy, self.max_edad_dias = transporte, hoy, max_edad_dias
         self.reintentos, self._pausa, self.tolerancia_invalidos = reintentos, pausa, tolerancia_invalidos
         simulado = bool(getattr(transporte, "simulado", True))
-        pruebas = (not simulado) and getattr(transporte, "entorno", None) == "pruebas"      # copia de pruebas: datos reales de un respaldo, NO vivos
-        self.tipo = TIPO_SIMULADA if simulado else TIPO_PRUEBAS if pruebas else TIPO_VIVA
-        self.en_vivo = not simulado and not pruebas
+        entorno = getattr(transporte, "entorno", None)
+        pruebas = (not simulado) and entorno == "pruebas"      # copia de pruebas: datos reales de un respaldo, NO vivos
+        prod_nv = (not simulado) and entorno == "produccion-no-validada"
+        self.tipo = TIPO_SIMULADA if simulado else TIPO_PRUEBAS if pruebas else TIPO_PRODUCCION_NV if prod_nv else TIPO_VIVA
+        self.en_vivo = not simulado and not pruebas and not prod_nv
         self.etiqueta = ("FUENTE EMPRESARIAL SIMULADA (datos sintéticos): no representa saldos reales" if simulado else
-                         "Cosprobell Backend de PRUEBAS (copia de un respaldo): no es dato vivo ni validado" if pruebas else "Fuente empresarial (solo lectura)")
+                         "Cosprobell Backend de PRUEBAS (copia de un respaldo): no es dato vivo ni validado" if pruebas else
+                         "Cosprobell PRODUCCIÓN (solo lectura): datos reales, NO validados contablemente; no publicable" if prod_nv else "Fuente empresarial (solo lectura)")
         self.fecha_corte: date = date.min
         self._d: Optional[dict] = None          # ultima carga VALIDA
         self.version_datos = 0                  # +1 cada vez que una carga valida REEMPLAZA a la anterior: identidad de los datos para invalidar derivados
@@ -279,7 +283,7 @@ class FuenteEmpresarial:
         edad = ((hoy or self._hoy()) - self.fecha_corte).days
         motivo = "; ".join(self.calidad.get("problemas", [])[:3]) or "Carga validada."
         if not self.en_vivo:
-            motivo = ("FUENTE SIMULADA: " if self.tipo == TIPO_SIMULADA else "COPIA DE PRUEBAS (no es dato vivo): ") + motivo
+            motivo = ("FUENTE SIMULADA: " if self.tipo == TIPO_SIMULADA else "COPIA DE PRUEBAS (no es dato vivo): " if self.tipo == TIPO_PRUEBAS else "PRODUCCIÓN SIN VALIDAR (solo lectura): ") + motivo
         return {"tipo": self.tipo, "fecha_corte": self.fecha_corte.isoformat(), "edad_dias": edad, "vigente": self._vigente_hoy() and self.en_vivo,
                 "calidad": self.calidad.get("estado"), "motivo": motivo, "ultima_carga_ok": self.ultima_carga_ok}
 
