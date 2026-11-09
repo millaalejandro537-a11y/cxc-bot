@@ -26,13 +26,15 @@ ENTORNO_PRUEBAS, ENTORNO_PRODUCCION = "pruebas", "produccion-no-validada"
 ENV_ATESTACION = "CXC_GELSYN_PG_ATESTACION"      # debe valer "Cosprobell-pruebas": quien la define afirma que la URL es de ESE servicio
 MODO_FUENTE = "gelsyn-pg-pruebas"
 
-SQL_CLIENTES_TODOS = 'SELECT "cardCode", "cardName" AS nombre, "salesPersonCode" AS vendedor, "uZona" AS ruta FROM clientes WHERE ' + ip._pub("clientes")
+SQL_CLIENTES_TODOS = 'SELECT "cardCode", "cardName" AS nombre, "salesPersonCode" AS vendedor, "uZona" AS ruta, "currentAccountBalance" AS saldo FROM clientes WHERE ' + ip._pub("clientes")
 SQL_FACTURAS_TODAS = ('SELECT "docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", cancelled FROM facturas WHERE '
                       + ip._pub("facturas"))
 SQL_PAGOS_TODOS = 'SELECT "docEntry", "cardCode", "docDate", total, "cashSum", "transferSum", cancelled FROM pagos WHERE ' + ip._pub("pagos")
 SQL_APLICACIONES_TODAS = ('SELECT a."pagoDocEntry", a."facturaDocEntry", a."sumApplied", a.cancelado, a."invoiceType" FROM pagos_facturas a JOIN pagos p ON p."docEntry" = a."pagoDocEntry" WHERE '
                           + ip._pub("aplicacionesPagos", "a") + ' AND ' + ip._pub("pagos", "p"))
 SQL_VENDEDORES = 'SELECT "salesEmployeeCode" AS codigo, "salesEmployeeName" AS nombre FROM vendedores WHERE ' + ip._pub("vendedores")
+# `finanzas_control.publicadoEn` es la ULTIMA CARGA COMPLETA; las filas se actualizan de forma incremental (`sincronizadoEn`): la frescura real de cada entidad es la mayor de las dos.
+SQL_SYNC_FILAS = {e: f'SELECT max("sincronizadoEn") AS m FROM {t} WHERE ' + ip._pub(e) for e, t in (("clientes", "clientes"), ("facturas", "facturas"), ("pagos", "pagos"))}
 SQL_CORTES = 'SELECT entidad, "publicadoEn" FROM finanzas_control WHERE entidad IN (\'clientes\', \'facturas\', \'pagos\', \'aplicacionesPagos\')'
 
 
@@ -62,8 +64,18 @@ def verificar_identidad(ses: "ip.Sesion", produccion: bool = False) -> None:
 def leer_todo(ses: "ip.Sesion") -> dict:
     cli = ses.consulta(SQL_CLIENTES_TODOS)
     return {"clientes": {r["cardCode"] for r in cli}, "vendedores": {r["codigo"]: r["nombre"] for r in ses.consulta(SQL_VENDEDORES)},
-            "clientes_info": {r["cardCode"]: {"nombre": r["nombre"], "vendedor": r["vendedor"], "ruta": r["ruta"]} for r in cli},
+            "clientes_info": {r["cardCode"]: {"nombre": r["nombre"], "vendedor": r["vendedor"], "ruta": r["ruta"], "saldo": r["saldo"]} for r in cli},
             "facturas": ses.consulta(SQL_FACTURAS_TODAS), "pagos": ses.consulta(SQL_PAGOS_TODOS), "aplicaciones": ses.consulta(SQL_APLICACIONES_TODAS)}
+
+
+def cortes_reales(ses: "ip.Sesion") -> Dict[str, Any]:
+    """Corte por entidad = max(publicadoEn de la ultima carga completa, ultima `sincronizadoEn` de sus filas)."""
+    cortes = {r["entidad"]: r["publicadoEn"] for r in ses.consulta(SQL_CORTES)}
+    for ent, sql in SQL_SYNC_FILAS.items():
+        m = ses.consulta(sql)[0]["m"]
+        if m is not None and (cortes.get(ent) is None or m > cortes[ent]):
+            cortes[ent] = m
+    return cortes
 
 
 def _iso_utc(v: Any) -> Optional[str]:
@@ -139,7 +151,7 @@ class LectorPg:
                 conn.close()
 
     def leer(self) -> tuple:
-        return self._con(lambda ses: (leer_todo(ses), {r["entidad"]: r["publicadoEn"] for r in ses.consulta(SQL_CORTES)}))
+        return self._con(lambda ses: (leer_todo(ses), cortes_reales(ses)))
 
     def conciliacion(self) -> dict:
         from . import investigacion_saldos_pg as inv

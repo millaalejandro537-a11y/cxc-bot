@@ -145,7 +145,7 @@ def payloads_transporte(datos: dict, corte_iso: str = "2026-11-04T19:00:00Z") ->
     yn = lambda b: "Y" if b else "N"  # noqa: E731
     pagos = {p["docEntry"]: p for p in datos["pagos"]}
     datos_t = {
-        "clientes": [{"cardCode": c, "nombre": (datos.get("clientes_info", {}).get(c) or {}).get("nombre") or "SIN NOMBRE (no se lee)", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": None,
+        "clientes": [{"cardCode": c, "nombre": (datos.get("clientes_info", {}).get(c) or {}).get("nombre") or "SIN NOMBRE (no se lee)", "activo": "Y", "bloqueado": "N", "moneda": "LPS", "saldo": _txt((datos.get("clientes_info", {}).get(c) or {}).get("saldo")),
                       "vendedor": (datos.get("clientes_info", {}).get(c) or {}).get("vendedor", 0), "zona": None, "ruta": (datos.get("clientes_info", {}).get(c) or {}).get("ruta")}
                      for c in sorted(datos["clientes"])],
         "facturas": [{"docEntry": f["docEntry"], "docNum": f["docNum"], "cardCode": f["cardCode"], "fecha": _d(f["docDate"]).isoformat(), "vencimiento": _d(f["docDueDate"]).isoformat() if f["docDueDate"] else None,

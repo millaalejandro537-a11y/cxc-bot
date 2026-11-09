@@ -141,3 +141,5 @@ Detalle y cifras: `docs/MIGRACION-OCCIDENTE-119.md` §4–§6.
 - 2026-11-06 Issue #5 (2): nombres de cliente/vendedor desde tablas autorizadas (permisos de ruta), GET /api/fuente/discrepancias (informativo, no modifica rutas), identidad estructural (columnas+tipos+versiones), y finanzas_actualizaciones ausente por 2 migraciones pendientes (BD 30 vs SQL 32). Ver docs/ENDPOINTS-FUENTE-FINANCIERA.md.
 
 - 2026-11-09 Issue #5: DECISION de Alejandro: usar la URL de PRODUCCION (cuenta postgres) con limites: escritura solo en las 26 tablas cxc, lectura financiera autorizada, publicacion bloqueada. Implementado modo gelsyn-pg-produccion (solo lectura, permisos_pg.py). En produccion NO existe el esquema cxc; finanzas_actualizaciones si existe. Ver docs/PRODUCCION-SOLO-LECTURA.md.
+
+- 2026-11-09 Issue #5 (2): Gelsyn: rol solo lectura no necesario; NO se crea esquema cxc en produccion (Portal sigue con SQLite). clientes se sincroniza incrementalmente (sincronizadoEn 09/11): corte por entidad = max(publicadoEn, sincronizadoEn); saldo de control ya se usa (no validado). Ver docs/PRODUCCION-SOLO-LECTURA.md.

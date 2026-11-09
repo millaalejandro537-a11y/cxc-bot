@@ -22,6 +22,7 @@ class ConexionFalsa:
         self.ejecutadas, self.cerrada, self.rollbacks = [], False, 0
         self.tablas, self.conteos = tablas, dict(ip.TABLAS if conteos is None else conteos)
         self.sin_columnas, self.tipos, self.sin_version, self.solo_lectura = set(), {}, set(), True
+        self.sync = {}                  # tabla -> ultima sincronizadoEn de sus filas (None = sin dato)
 
     def cursor(self):
         return _Cursor(self)
@@ -59,18 +60,20 @@ class _Cursor:
             return ["codigo", "nombre"], [(7, "Vendedor Siete")]
         if "information_schema.tables" in sql:
             return ["n"], [(self.c.tablas,)]
+        if 'max("sincronizadoEn")' in sql:
+            return ["m"], [(self.c.sync.get(re.search(r"FROM (\w+) WHERE", sql).group(1)),)]
         if "FROM finanzas_control WHERE entidad IN" in sql:
             if "movimientos" in sql:
                 return ["entidad", "iniciadoEn", "finalizadoEn", "publicadoEn", "secuencia", "cantidad"], [("clientes", datetime(2026, 10, 27, 17), datetime(2026, 10, 27, 18), datetime(2026, 10, 27, 18), 1, 2)]
             return ["entidad", "publicadoEn"], [("clientes", datetime(2026, 10, 27, 18)), ("facturas", datetime(2026, 11, 4, 16)), ("pagos", datetime(2026, 11, 4, 16)),
                                                ("aplicacionesPagos", datetime(2026, 11, 4, 16))]
-        if "currentAccountBalance" in sql:                                           # conciliacion: saldo de control
+        if "currentAccountBalance" in sql and "currency" in sql:                                           # conciliacion: saldo de control
             return ["cardCode", "saldo", "currency"], [("C10001", Decimal("150.00"), "LPS"), ("C10002", Decimal("0"), "LPS")]
         if "FROM movimientos_contables" in sql:                                      # conciliacion: libro auxiliar (la linea 2 se creo DESPUES de la foto de clientes)
             return (["cardCode", "transId", "tipo", "fecha", "v", "en_fc"],
                     [("C10001", 1, "ttARInvoice", datetime(2026, 9, 1).date(), Decimal("150.00"), 0), ("C10001", 2, "ttReceipt", datetime(2026, 10, 20).date(), Decimal("-100.00"), 0)])
         if "FROM clientes" in sql:
-            return ["cardCode", "nombre", "vendedor", "ruta"], [("C10001", "CLIENTE UNO SA", 7, "04"), ("C10002", "CLIENTE DOS", 7, None)]
+            return ["cardCode", "nombre", "vendedor", "ruta", "saldo"], [("C10001", "CLIENTE UNO SA", 7, "04", Decimal("150.00")), ("C10002", "CLIENTE DOS", 7, None, Decimal("0"))]
         if "FROM facturas" in sql:
             f = lambda n, d, tot, pag, st: (n, n, "C10001", datetime(2026, 9, d), datetime(2026, 11, d), Decimal(tot), Decimal(pag), st, False)  # noqa: E731
             return (["docEntry", "docNum", "cardCode", "docDate", "docDueDate", "docTotal", "paidToDate", "documentStatus", "cancelled"],
@@ -248,3 +251,18 @@ def test_produccion_no_filtra_la_url_en_los_errores(tmp_path):
     with pytest.raises(fp.FuentePgError) as e:
         fp.crear_fuente_pg_produccion(_env_prod(tmp_path), conectar=falla)
     assert "CLAVE-FALSA" not in str(e.value) and "postgresql://" not in str(e.value)
+
+
+def test_la_frescura_real_es_la_ultima_sincronizacion_de_las_filas_y_habilita_el_saldo_de_control():
+    # carga completa de clientes el 27/10, pero sus filas se sincronizaron el 04/11 (misma fecha que facturas y pagos): el saldo de control es del MISMO corte
+    conn = ConexionFalsa()
+    conn.sync = {"clientes": datetime(2026, 11, 4, 17), "facturas": datetime(2026, 11, 4, 16), "pagos": datetime(2026, 11, 4, 16)}
+    f = _crear(conn)
+    assert f.detalle()["cortes_por_entidad"]["clientes"] == "2026-11-04"
+    assert f.saldo_abierto("C10001") == 150.0                                       # saldo de control de SAP (no la suma de facturas), marcado no validado
+    assert f.apta_para_publicar is False and "saldos_de_control_de_otro_corte" not in f.detalle()["excluidos"]
+
+
+def test_sin_sincronizacion_posterior_el_saldo_de_control_sigue_excluido():
+    f = _crear(ConexionFalsa())                                                       # clientes: 27/10; documentos: 04/11
+    assert f.detalle()["excluidos"].get("saldos_de_control_de_otro_corte") == 2 and f.saldo_abierto("C10001") == 50.0

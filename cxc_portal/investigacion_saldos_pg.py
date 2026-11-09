@@ -94,6 +94,9 @@ def diferencias(clientes: Sequence[dict], lineas: Sequence[dict], transid_limite
 def investigar(ses: "ip.Sesion") -> dict:
     cortes = [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in r.items()} for r in ses.consulta(SQL_CORTES)]
     corte_cli = next((r["finalizadoEn"] for r in ses.consulta(SQL_CORTES) if r["entidad"] == "clientes"), None)
+    sync = ses.consulta('SELECT max("sincronizadoEn") AS m FROM clientes WHERE ' + ip._pub("clientes"))[0]["m"]
+    if sync is not None and (corte_cli is None or sync > corte_cli):
+        corte_cli = sync                  # la foto de saldos de control es la ultima sincronizacion de las filas, no solo la ultima carga completa
     clientes = ses.consulta(SQL_CLIENTES)
     lineas = ses.consulta(SQL_LINEAS)
     res = analizar(clientes, lineas, corte_cli.date() if corte_cli else None)
